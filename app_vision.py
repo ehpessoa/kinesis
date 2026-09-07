@@ -1,8 +1,77 @@
+import os
+import urllib.request
 import cv2
 import mediapipe as mp
 import numpy as np
 import time
 from collections import deque
+
+from mediapipe.tasks.python import BaseOptions
+from mediapipe.tasks.python.vision import (
+    PoseLandmarker,
+    PoseLandmarkerOptions,
+    PoseLandmarksConnections,
+    FaceLandmarker,
+    FaceLandmarkerOptions,
+    FaceLandmarksConnections,
+    GestureRecognizer,
+    GestureRecognizerOptions,
+    HandLandmarksConnections,
+    RunningMode,
+)
+
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+POSE_MODEL_PATH = os.path.join(MODELS_DIR, "pose_landmarker_lite.task")
+FACE_MODEL_PATH = os.path.join(MODELS_DIR, "face_landmarker.task")
+GESTURE_MODEL_PATH = os.path.join(MODELS_DIR, "gesture_recognizer.task")
+
+MODEL_URLS = {
+    POSE_MODEL_PATH: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+    FACE_MODEL_PATH: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+    GESTURE_MODEL_PATH: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task",
+}
+
+
+def ensure_models_downloaded():
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    for path, url in MODEL_URLS.items():
+        if not os.path.exists(path):
+            print(f"Baixando modelo: {os.path.basename(path)}...")
+            urllib.request.urlretrieve(url, path)
+
+
+POSE_CONNECTIONS = [(c.start, c.end) for c in PoseLandmarksConnections.POSE_LANDMARKS]
+FACE_CONNECTIONS = [
+    (c.start, c.end)
+    for c in (
+        FaceLandmarksConnections.FACE_LANDMARKS_FACE_OVAL
+        + FaceLandmarksConnections.FACE_LANDMARKS_LEFT_EYE
+        + FaceLandmarksConnections.FACE_LANDMARKS_LEFT_EYEBROW
+        + FaceLandmarksConnections.FACE_LANDMARKS_RIGHT_EYE
+        + FaceLandmarksConnections.FACE_LANDMARKS_RIGHT_EYEBROW
+        + FaceLandmarksConnections.FACE_LANDMARKS_LIPS
+    )
+]
+HAND_CONNECTIONS = [(c.start, c.end) for c in HandLandmarksConnections.HAND_CONNECTIONS]
+
+GESTURE_LABELS = {
+    "Closed_Fist": "Punho Fechado",
+    "Open_Palm": "Palma Aberta",
+    "Pointing_Up": "Apontando p/ Cima",
+    "Thumb_Down": "Joinha Negativo",
+    "Thumb_Up": "Joinha Positivo",
+    "Victory": "Sinal de Vitoria",
+    "ILoveYou": "Eu Te Amo",
+}
+
+
+def draw_landmarks(frame, landmarks, connections, frame_w, frame_h, color, radius=2):
+    points = [(int(lm.x * frame_w), int(lm.y * frame_h)) for lm in landmarks]
+    for start, end in connections:
+        cv2.line(frame, points[start], points[end], color, 1)
+    for point in points:
+        cv2.circle(frame, point, radius, color, -1)
+
 
 class BehaviorTracker:
     """Gerencia a máquina de estados, cinemática corporal e expressões faciais."""
@@ -13,47 +82,74 @@ class BehaviorTracker:
         self.prev_wrists = None
         self.fall_state = False
         self.fall_timestamp = 0
+        self.eyes_closed_since = None
         self.registered_id = "Usuario_Principal" # Mock de Biometria para o Piloto
 
-    def analyze_face(self, face_landmarks, frame_w, frame_h) -> str:
-        """
-        Analisa marcos faciais para classificar expressões básicas
-        (Alegria, Surpreso, Neutro, Boca Aberta/Tristeza).
-        """
-        # Índices de referência do FaceMesh
-        # Topo/Base do lábio: 13, 14 | Cantos da boca: 61, 291
-        # Sobrancelhas: 70, 300 | Olhos: 159, 386
-        p13 = np.array([face_landmarks.landmark[13].x * frame_w, face_landmarks.landmark[13].y * frame_h])
-        p14 = np.array([face_landmarks.landmark[14].x * frame_w, face_landmarks.landmark[14].y * frame_h])
-        p61 = np.array([face_landmarks.landmark[61].x * frame_w, face_landmarks.landmark[61].y * frame_h])
-        p291 = np.array([face_landmarks.landmark[291].x * frame_w, face_landmarks.landmark[291].y * frame_h])
+    def analyze_blendshapes(self, blendshapes) -> dict:
+        scores = {c.category_name: c.score for c in blendshapes}
 
-        mouth_height = np.linalg.norm(p13 - p14)
-        mouth_width = np.linalg.norm(p61 - p291)
-        mouth_ratio = mouth_height / max(1.0, mouth_width)
+        smile = (scores.get("mouthSmileLeft", 0) + scores.get("mouthSmileRight", 0)) / 2
+        frown = (scores.get("mouthFrownLeft", 0) + scores.get("mouthFrownRight", 0)) / 2
+        brow_down = (scores.get("browDownLeft", 0) + scores.get("browDownRight", 0)) / 2
+        brow_up = scores.get("browInnerUp", 0)
+        jaw_open = scores.get("jawOpen", 0)
+        eye_wide = (scores.get("eyeWideLeft", 0) + scores.get("eyeWideRight", 0)) / 2
+        nose_sneer = (scores.get("noseSneerLeft", 0) + scores.get("noseSneerRight", 0)) / 2
+        mouth_press = (scores.get("mouthPressLeft", 0) + scores.get("mouthPressRight", 0)) / 2
+        eye_blink = (scores.get("eyeBlinkLeft", 0) + scores.get("eyeBlinkRight", 0)) / 2
 
-        # Curvatura dos cantos da boca em relação ao centro labial
-        mouth_center_y = (p13[1] + p14[1]) / 2.0
-        corners_y = (p61[1] + p291[1]) / 2.0
-        smile_metric = corners_y - mouth_center_y # Cantos mais altos que o centro indicam sorriso
-
-        if mouth_ratio > 0.45:
-            return "Surpreso / Boca Aberta"
-        elif smile_metric < -1.5:
-            return "Alegria / Sorriso"
-        elif smile_metric > 3.0:
-            return "Triste / Desconforto"
+        if nose_sneer > 0.4:
+            emotion = "Nojo / Desagrado"
+        elif jaw_open > 0.5 and (brow_up > 0.3 or eye_wide > 0.3):
+            emotion = "Surpreso"
+        elif smile > 0.4:
+            emotion = "Alegria / Sorriso"
+        elif frown > 0.3 and brow_up > 0.25:
+            emotion = "Triste"
+        elif brow_down > 0.4 and mouth_press > 0.2:
+            emotion = "Raiva / Tensao"
         else:
-            return "Neutro"
+            emotion = "Neutro"
+
+        drowsy_alert = False
+        now = time.time()
+        if eye_blink > 0.55:
+            if self.eyes_closed_since is None:
+                self.eyes_closed_since = now
+            elif now - self.eyes_closed_since > 1.2:
+                drowsy_alert = True
+        else:
+            self.eyes_closed_since = None
+
+        return {"emotion": emotion, "drowsy_alert": drowsy_alert}
+
+    def estimate_head_pose(self, face_landmarks, frame_w, frame_h) -> str:
+        nose = face_landmarks[1]
+        forehead = face_landmarks[10]
+        chin = face_landmarks[152]
+        left_edge = face_landmarks[234]
+        right_edge = face_landmarks[454]
+
+        face_span_x = max(1.0, (right_edge.x - left_edge.x) * frame_w)
+        horizontal_ratio = ((nose.x * frame_w) - (left_edge.x * frame_w)) / face_span_x
+
+        face_span_y = max(1.0, (chin.y - forehead.y) * frame_h)
+        vertical_ratio = ((nose.y * frame_h) - (forehead.y * frame_h)) / face_span_y
+
+        if horizontal_ratio < 0.35:
+            return "Direita"
+        elif horizontal_ratio > 0.65:
+            return "Esquerda"
+        elif vertical_ratio > 0.62:
+            return "Baixo"
+        elif vertical_ratio < 0.45:
+            return "Cima"
+        else:
+            return "Frente"
 
     def analyze_pose(self, pose_landmarks, frame_w, frame_h) -> dict:
-        """
-        Calcula a cinemática do corpo: posturas, dinâmica de movimento e quedas bruscas.
-        """
-        # Extrai pontos-chave
-        lms = pose_landmarks.landmark
-        
-        # Coordenadas chave
+        lms = pose_landmarks
+
         nose = np.array([lms[0].x * frame_w, lms[0].y * frame_h])
         l_sh = np.array([lms[11].x * frame_w, lms[11].y * frame_h])
         r_sh = np.array([lms[12].x * frame_w, lms[12].y * frame_h])
@@ -64,21 +160,17 @@ class BehaviorTracker:
         l_wrist = np.array([lms[15].x * frame_w, lms[15].y * frame_h])
         r_wrist = np.array([lms[16].x * frame_w, lms[16].y * frame_h])
 
-        # Centros
         shoulder_center = (l_sh + r_sh) / 2.0
         hip_center = (l_hip + r_hip) / 2.0
         knee_center = (l_knee + r_knee) / 2.0
 
-        # Caixa delimitadora aproximada
         torso_height = np.linalg.norm(shoulder_center - hip_center)
         body_width = np.linalg.norm(l_sh - r_sh)
 
-        # 1. Ângulo do tronco em relação à vertical
         dx = abs(shoulder_center[0] - hip_center[0])
         dy = max(1.0, abs(shoulder_center[1] - hip_center[1]))
         trunk_angle = np.degrees(np.arctan(dx / dy))
 
-        # 2. Identificação de Postura
         posture = "Em pe"
         if trunk_angle > 50.0 or dy < (body_width * 0.6):
             posture = "Deitado"
@@ -87,7 +179,6 @@ class BehaviorTracker:
             if hip_knee_dy < (torso_height * 0.7):
                 posture = "Sentado"
 
-        # 3. Análise de Inquietação / Movimento das mãos
         current_wrists = (l_wrist + r_wrist) / 2.0
         if self.prev_wrists is not None:
             w_speed = np.linalg.norm(current_wrists - self.prev_wrists)
@@ -95,25 +186,31 @@ class BehaviorTracker:
         self.prev_wrists = current_wrists
 
         avg_wrist_motion = np.mean(self.wrist_speed_history) if self.wrist_speed_history else 0
-        
+
         dynamic_state = "Estatico"
         if avg_wrist_motion > 15.0:
             dynamic_state = "Inquieto / Mexendo"
         elif avg_wrist_motion > 4.0:
             dynamic_state = "Ativo / Em Movimento"
 
-        # 4. Detecção de Queda Brusca e Tropeço
+        arm_raised = bool(
+            (l_wrist[1] < shoulder_center[1] - torso_height * 0.2)
+            or (r_wrist[1] < shoulder_center[1] - torso_height * 0.2)
+        )
+        hand_near_face = bool(
+            (np.linalg.norm(l_wrist - nose) < body_width * 0.4)
+            or (np.linalg.norm(r_wrist - nose) < body_width * 0.4)
+        )
+
         self.hip_y_history.append(hip_center[1])
         fall_alert = False
 
         if len(self.hip_y_history) == self.history_len:
             dy_descent = self.hip_y_history[-1] - self.hip_y_history[0]
-            # Queda rápida: deslocamento vertical brusco para baixo seguido de postura deitada
             if dy_descent > (torso_height * 0.8) and posture == "Deitado":
                 self.fall_state = True
                 self.fall_timestamp = time.time()
 
-        # Mantém o alerta visível por 3 segundos
         if self.fall_state:
             if time.time() - self.fall_timestamp < 3.0:
                 fall_alert = True
@@ -124,36 +221,57 @@ class BehaviorTracker:
             "posture": posture,
             "dynamic_state": dynamic_state,
             "fall_alert": fall_alert,
-            "torso_h": torso_height
+            "arm_raised": arm_raised,
+            "hand_near_face": hand_near_face,
+            "torso_h": torso_height,
         }
+
+    def analyze_gestures(self, gesture_results) -> dict:
+        hands = {}
+        for i in range(len(gesture_results.hand_landmarks)):
+            handedness = gesture_results.handedness[i][0].category_name if gesture_results.handedness[i] else None
+            gesture_cat = gesture_results.gestures[i][0] if gesture_results.gestures[i] else None
+            side = "Esquerda" if handedness == "Left" else "Direita"
+            label = GESTURE_LABELS.get(gesture_cat.category_name) if gesture_cat else None
+            if label:
+                hands[side] = label
+        return hands
 
 
 def main():
+    ensure_models_downloaded()
+
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Erro: Não foi possível acessar a câmera do computador.")
         return
 
-    # Inicialização dos detectores MediaPipe
-    mp_pose = mp.solutions.pose
-    mp_face_mesh = mp.solutions.face_mesh
-    mp_drawing = mp.solutions.drawing_utils
-    mp_drawing_styles = mp.solutions.drawing_styles
-
-    pose_detector = mp_pose.Pose(
-        min_detection_confidence=0.5,
+    pose_detector = PoseLandmarker.create_from_options(PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=POSE_MODEL_PATH),
+        running_mode=RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
         min_tracking_confidence=0.5,
-        model_complexity=1
-    )
-    face_detector = mp_face_mesh.FaceMesh(
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
+    ))
+    face_detector = FaceLandmarker.create_from_options(FaceLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=FACE_MODEL_PATH),
+        running_mode=RunningMode.VIDEO,
+        num_faces=1,
+        min_face_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+        output_face_blendshapes=True,
+    ))
+    gesture_recognizer = GestureRecognizer.create_from_options(GestureRecognizerOptions(
+        base_options=BaseOptions(model_asset_path=GESTURE_MODEL_PATH),
+        running_mode=RunningMode.VIDEO,
+        num_hands=2,
+        min_hand_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    ))
 
     tracker = BehaviorTracker()
     prev_frame_time = time.time()
+    start_time = time.time()
 
     print("Pipeline iniciado com sucesso. Pressione 'q' na janela para encerrar.")
 
@@ -162,80 +280,89 @@ def main():
         if not ret:
             break
 
-        # Espelhamento horizontal para experiência natural de webcam
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
 
-        # Conversão de cores para processamento no MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rgb_frame.flags.writeable = False
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        timestamp_ms = int((time.time() - start_time) * 1000)
 
-        pose_results = pose_detector.process(rgb_frame)
-        face_results = face_detector.process(rgb_frame)
+        pose_results = pose_detector.detect_for_video(mp_image, timestamp_ms)
+        face_results = face_detector.detect_for_video(mp_image, timestamp_ms)
+        gesture_results = gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
 
-        # Variáveis de exibição
         emotion = "N/A"
+        head_pose = "N/A"
+        drowsy_alert = False
         posture = "N/A"
         motion = "N/A"
         fall_alert = False
+        arm_raised = False
+        hand_near_face = False
+        hands_gestures = {}
 
-        # 1. Extração de Expressão Facial
-        if face_results.multi_face_landmarks:
-            for face_landmarks in face_results.multi_face_landmarks:
-                emotion = tracker.analyze_face(face_landmarks, w, h)
-                # Desenha malha facial sutil
-                mp_drawing.draw_landmarks(
-                    image=frame,
-                    landmark_list=face_landmarks,
-                    connections=mp_face_mesh.FACEMESH_CONTOURS,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_contours_style()
-                )
+        if face_results.face_landmarks:
+            for face_landmarks in face_results.face_landmarks:
+                head_pose = tracker.estimate_head_pose(face_landmarks, w, h)
+                draw_landmarks(frame, face_landmarks, FACE_CONNECTIONS, w, h, (0, 255, 255), radius=1)
+            if face_results.face_blendshapes:
+                blend_data = tracker.analyze_blendshapes(face_results.face_blendshapes[0])
+                emotion = blend_data["emotion"]
+                drowsy_alert = blend_data["drowsy_alert"]
 
-        # 2. Extração de Postura e Movimento Corporal
         if pose_results.pose_landmarks:
-            mp_drawing.draw_landmarks(
-                frame,
-                pose_results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-            )
-            pose_data = tracker.analyze_pose(pose_results.pose_landmarks, w, h)
-            posture = pose_data["posture"]
-            motion = pose_data["dynamic_state"]
-            fall_alert = pose_data["fall_alert"]
+            for pose_landmarks in pose_results.pose_landmarks:
+                draw_landmarks(frame, pose_landmarks, POSE_CONNECTIONS, w, h, (100, 255, 100), radius=3)
+                pose_data = tracker.analyze_pose(pose_landmarks, w, h)
+                posture = pose_data["posture"]
+                motion = pose_data["dynamic_state"]
+                fall_alert = pose_data["fall_alert"]
+                arm_raised = pose_data["arm_raised"]
+                hand_near_face = pose_data["hand_near_face"]
 
-        # 3. Cálculo de FPS
+        if gesture_results.hand_landmarks:
+            for hand_landmarks in gesture_results.hand_landmarks:
+                draw_landmarks(frame, hand_landmarks, HAND_CONNECTIONS, w, h, (255, 120, 255), radius=2)
+            hands_gestures = tracker.analyze_gestures(gesture_results)
+
         curr_frame_time = time.time()
         fps = 1.0 / max(1e-5, (curr_frame_time - prev_frame_time))
         prev_frame_time = curr_frame_time
 
-        # --- Camada de Renderização do HUD (Interface em Tempo Real) ---
-        # Painel Lateral de Informações
+        gestures_text = ", ".join(f"{side}: {label}" for side, label in hands_gestures.items()) or "Nenhum"
+
         overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (340, 210), (20, 20, 20), -1)
+        cv2.rectangle(overlay, (10, 10), (420, 320), (20, 20, 20), -1)
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
 
-        # Textos informativos
         cv2.putText(frame, f"ID: {tracker.registered_id}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         cv2.putText(frame, f"Expressao: {emotion}", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-        cv2.putText(frame, f"Postura: {posture}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 255, 100), 2)
-        cv2.putText(frame, f"Movimento: {motion}", (20, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 100), 2)
-        cv2.putText(frame, f"FPS: {fps:.1f}", (20, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+        cv2.putText(frame, f"Cabeca: {head_pose}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 255), 2)
+        cv2.putText(frame, f"Postura: {posture}", (20, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 255, 100), 2)
+        cv2.putText(frame, f"Movimento: {motion}", (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 100), 2)
+        cv2.putText(frame, f"Braco Levantado: {'Sim' if arm_raised else 'Nao'}", (20, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2)
+        cv2.putText(frame, f"Mao no Rosto: {'Sim' if hand_near_face else 'Nao'}", (20, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2)
+        cv2.putText(frame, f"Gestos: {gestures_text}", (20, 285), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 120, 255), 2)
+        cv2.putText(frame, f"FPS: {fps:.1f}", (20, 315), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
-        # Alerta de Queda / Evento Crítico
         if fall_alert:
             cv2.rectangle(frame, (0, 0), (w, h), (0, 0, 255), 6)
             cv2.putText(frame, "ALERTA: QUEDA BRUSCA DETECTADA!", (w // 2 - 240, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 255), 3)
+        elif drowsy_alert:
+            cv2.rectangle(frame, (0, 0), (w, h), (0, 140, 255), 6)
+            cv2.putText(frame, "ALERTA: SINAL DE SONOLENCIA!", (w // 2 - 220, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 140, 255), 3)
 
         cv2.imshow("Monitoramento de Comportamento e Biometria em Tempo Real", frame)
 
-        # Tecla 'q' ou 'ESC' para sair
         if cv2.waitKey(1) & 0xFF in [ord('q'), 27]:
             break
 
     cap.release()
+    pose_detector.close()
+    face_detector.close()
+    gesture_recognizer.close()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
