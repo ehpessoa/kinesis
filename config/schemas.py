@@ -193,11 +193,11 @@ class RemoteServerConfig(BaseModel):
 
 class StorageConfig(BaseModel):
     """Retenção e expurgo automático do histórico de eventos persistido em
-    `data/events.jsonl` (ver `src/storage/event_log.py`). Sem isso, o log
-    cresce indefinidamente numa instalação de longa duração, acumulando
-    dados sensíveis (frames de câmera anexados a alertas, rótulos de
-    pessoa) sem prazo — `retention_hours` é também o parâmetro citado no
-    roteiro de evolução como mitigação de privacidade/LGPD."""
+    SQLite (`data/events.db`, ver `src/storage/event_log.py`). Sem isso, o
+    histórico cresce indefinidamente numa instalação de longa duração,
+    acumulando dados sensíveis (frames de câmera anexados a alertas,
+    rótulos de pessoa) sem prazo — `retention_hours` é também o parâmetro
+    citado no roteiro de evolução como mitigação de privacidade/LGPD."""
 
     retention_hours: float = 24.0
     purge_interval_minutes: float = 60.0

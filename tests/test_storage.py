@@ -38,6 +38,54 @@ def test_event_logger_read_all_without_file_returns_empty(tmp_path):
     assert logger.read_all() == []
 
 
+def test_events_are_persisted_in_sqlite(tmp_path):
+    db_path = tmp_path / "events.db"
+    logger = EventLogger(path=str(db_path))
+    logger.log(make_event(event_id="EVT-01"))
+
+    assert db_path.exists()
+    with open(db_path, "rb") as f:
+        assert f.read(16) == b"SQLite format 3\x00"
+
+
+# --- Migracao automatica do formato legado (JSON Lines) ---
+
+def test_migrates_legacy_jsonl_at_configured_path(tmp_path):
+    legacy_path = tmp_path / "events.jsonl"
+    legacy_path.write_text(
+        make_event(event_id="EVT-01").model_dump_json() + "\n"
+        + make_event(event_id="EVT-04", severity="MEDIUM").model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    logger = EventLogger(path=str(legacy_path))
+
+    migrated = logger.read_all()
+    assert [e["event_id"] for e in migrated] == ["EVT-01", "EVT-04"]
+    assert (tmp_path / "events.jsonl.bak").exists()
+    # o caminho configurado agora contem o banco SQLite recriado, nao mais o JSONL original
+    with open(legacy_path, "rb") as f:
+        assert f.read(16) == b"SQLite format 3\x00"
+
+
+def test_migrates_legacy_jsonl_sibling_when_using_new_default_db_path(tmp_path):
+    legacy_sibling = tmp_path / "events.jsonl"
+    legacy_sibling.write_text(make_event(event_id="EVT-06").model_dump_json() + "\n", encoding="utf-8")
+
+    logger = EventLogger(path=str(tmp_path / "events.db"))
+
+    migrated = logger.read_all()
+    assert [e["event_id"] for e in migrated] == ["EVT-06"]
+    assert (tmp_path / "events.jsonl.bak").exists()
+    assert not legacy_sibling.exists()
+
+
+def test_no_migration_when_no_legacy_file_present(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "events.db"))
+    assert logger.read_all() == []
+    assert not (tmp_path / "events.jsonl.bak").exists()
+
+
 def test_read_recent_limits_to_last_n(tmp_path):
     logger = EventLogger(path=str(tmp_path / "events.jsonl"))
     for event_id in ("EVT-01", "EVT-02", "EVT-03", "EVT-04"):
