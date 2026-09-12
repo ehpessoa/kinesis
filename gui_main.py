@@ -48,6 +48,8 @@ def main():
             pose_fps=app_config.pipeline_rates.pose_fps,
             face_fps=app_config.pipeline_rates.face_fps,
             gesture_fps=app_config.pipeline_rates.gesture_fps,
+            night_routine_config=app_config.night_routine,
+            seizure_config=app_config.seizure_detection,
         )
         for cam in app_config.cameras
     ]

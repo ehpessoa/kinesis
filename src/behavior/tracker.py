@@ -4,14 +4,21 @@ compartilhar a mesma instância entre fontes misturaria o estado de pessoas
 ou cenas diferentes."""
 import time
 from collections import deque
+from typing import Optional, Tuple
 
 import numpy as np
 
 from src.vision.detectors import GESTURE_LABELS
 
+# Numero minimo de amostras na janela de tremor para uma estimativa de
+# frequencia minimamente confiavel via FFT - abaixo disso o resultado seria
+# ruido (poucos pontos, poucos bins de frequencia).
+_MIN_TREMOR_SAMPLES = 8
+_MIN_TREMOR_WINDOW_DURATION_SECONDS = 1.0
+
 
 class BehaviorTracker:
-    def __init__(self, history_len: int = 15):
+    def __init__(self, history_len: int = 15, tremor_window_seconds: float = 4.0):
         self.history_len = history_len
         self.hip_y_history = deque(maxlen=history_len)
         self.wrist_speed_history = deque(maxlen=history_len)
@@ -24,6 +31,15 @@ class BehaviorTracker:
         # ver src/vision/person_tracker.py. Nao ha reidentificacao facial.
         # Fica "N/A" se person_tracking estiver desabilitado na config.
         self.registered_id = "N/A"
+
+        # EVT-11 (convulsao/tremor): historico com timestamp (nao so
+        # contagem de amostras, ao contrario de wrist_speed_history acima)
+        # porque a analise em frequencia precisa da taxa de amostragem real,
+        # que varia com pipeline_rates.pose_fps e com jitter de rede em RTSP.
+        # maxlen generoso apenas como teto de seguranca; o filtro por tempo
+        # em _analyze_tremor() e o que de fato define a janela analisada.
+        self.tremor_window_seconds = tremor_window_seconds
+        self.wrist_track_history = deque(maxlen=200)
 
     def analyze_blendshapes(self, blendshapes) -> dict:
         scores = {c.category_name: c.score for c in blendshapes}
@@ -129,6 +145,10 @@ class BehaviorTracker:
             self.wrist_speed_history.append(w_speed)
         self.prev_wrists = current_wrists
 
+        now_ts = time.time()
+        self.wrist_track_history.append((now_ts, float(current_wrists[0]), float(current_wrists[1])))
+        tremor_hz, tremor_amplitude = self._analyze_tremor(now_ts, torso_height)
+
         avg_wrist_motion = np.mean(self.wrist_speed_history) if self.wrist_speed_history else 0
 
         dynamic_state = "Estatico"
@@ -168,7 +188,65 @@ class BehaviorTracker:
             "arm_raised": arm_raised,
             "hand_near_face": hand_near_face,
             "torso_h": torso_height,
+            "tremor_hz": tremor_hz,
+            "tremor_amplitude": tremor_amplitude,
         }
+
+    def _analyze_tremor(self, now: float, torso_height: float) -> Tuple[Optional[float], float]:
+        """Estima a frequência dominante de oscilação do pulso na janela
+        recente (`tremor_window_seconds`) via FFT — mitigação do EVT-11
+        (convulsão/tremor), que o plano original descreve como exigindo
+        "análise em frequência (FFT/zero-crossing) da oscilação de
+        pulsos/cotovelos". Usa o ponto médio entre os dois pulsos (mesmo
+        agregado já usado por `wrist_speed_history` acima) — uma
+        simplificação real: oscilação em anti-fase entre os braços poderia,
+        em tese, se cancelar nessa média. Não implementado aqui por
+        simplicidade; ver EventEngine/README para essa ressalva.
+
+        Analisa só o eixo vertical (y) do pulso, não a magnitude 2D do
+        deslocamento — tremor puramente horizontal não seria capturado.
+        Escolha deliberada: a maioria dos relatos de movimento clônico tem
+        componente vertical dominante (flexão/extensão), e um sinal 2D
+        exigiria uma definição de "frequência" mais complexa (a distância
+        euclidiana a um ponto de referência oscila ao dobro da frequência
+        real do movimento, por retificação).
+
+        Retorna `(None, 0.0)` quando não há amostras suficientes na janela
+        para uma estimativa minimamente confiável (ex: logo após o início
+        do rastreamento, ou pose_fps muito baixo)."""
+        window = [(t, x, y) for t, x, y in self.wrist_track_history if now - t <= self.tremor_window_seconds]
+        if len(window) < _MIN_TREMOR_SAMPLES or torso_height < 1e-3:
+            return None, 0.0
+
+        timestamps = np.array([t for t, _, _ in window])
+        ys = np.array([y for _, _, y in window])
+
+        duration = timestamps[-1] - timestamps[0]
+        if duration < _MIN_TREMOR_WINDOW_DURATION_SECONDS:
+            return None, 0.0
+
+        # Taxa de amostragem efetiva medida (nao assumida) - absorve jitter
+        # de captura RTSP e a taxa real configurada em pipeline_rates.pose_fps.
+        sample_rate_hz = (len(timestamps) - 1) / duration
+
+        signal = ys - np.mean(ys)
+        # Amplitude normalizada pela altura do tronco: o mesmo deslocamento
+        # em pixels significa "tremor maior" numa pessoa perto da camera do
+        # que numa pessoa longe - a normalizacao torna o limiar independente
+        # da distancia/enquadramento da instalacao.
+        amplitude = float(np.std(signal) / torso_height)
+
+        spectrum = np.abs(np.fft.rfft(signal))
+        freqs = np.fft.rfftfreq(len(signal), d=1.0 / sample_rate_hz)
+        if len(freqs) < 2:
+            return None, amplitude
+
+        # Ignora o indice 0 (componente DC/media, sempre o maior e sem
+        # informacao de oscilacao) ao procurar o pico dominante.
+        dominant_idx = int(np.argmax(spectrum[1:])) + 1
+        dominant_hz = float(freqs[dominant_idx])
+
+        return dominant_hz, amplitude
 
     def analyze_gestures(self, gesture_results) -> dict:
         hands = {}

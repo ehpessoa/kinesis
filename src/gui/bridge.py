@@ -22,14 +22,14 @@ from src.behavior.event_engine import EVENT_CATALOG, EventNotification
 from src.monitoring.status import build_status
 from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64, encode_frame_jpeg_bytes
 
-# Eventos EVT-05/10/11/12 nao rodam no EventEngine (ver README: exigem zonas
-# espaciais configuraveis, analise em frequencia e classificador de olhar
-# erratico que ainda nao existem). A GUI os lista mesmo assim, desabilitados,
-# para nao esconder a lacuna da matriz completa.
+# Eventos EVT-05/12 nao rodam no EventEngine (ver README: exigem um
+# classificador de olhar erratico e multiplas zonas de risco nomeadas que
+# ainda nao existem). A GUI os lista mesmo assim, desabilitados, para nao
+# esconder a lacuna da matriz completa. EVT-10/EVT-11 saíram desta lista
+# nesta etapa - agora implementados no EventEngine (ver README), entram em
+# IMPLEMENTED_EVENTS abaixo via EVENT_CATALOG.
 UNIMPLEMENTED_EVENTS = {
     "EVT-05": {"category": "Atencao", "name": "Desorientacao / Confusao", "default_severity": "LOW"},
-    "EVT-10": {"category": "Rotina", "name": "Ausencia da Cama no Horario Noturno", "default_severity": "HIGH"},
-    "EVT-11": {"category": "Saude", "name": "Deteccao de Convulsao / Tremores", "default_severity": "CRITICAL"},
     "EVT-12": {"category": "Dispositivos", "name": "Entrada em Zona de Risco", "default_severity": "HIGH"},
 }
 

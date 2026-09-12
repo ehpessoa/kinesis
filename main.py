@@ -144,11 +144,14 @@ class CameraPipeline:
         person_tracking_enabled: bool = True, person_tracking_confidence: float = 0.4,
         person_tracking_interval: int = 1,
         pose_fps: float = 18.0, face_fps: float = 8.0, gesture_fps: float = 8.0,
+        night_routine_config=None, seizure_config=None,
     ):
         self.name = name
         self.cam = ThreadedCamera(src, name=name).start()
         self.tracker = BehaviorTracker()
-        self.event_engine = EventEngine(source_name=name)
+        self.event_engine = EventEngine(
+            source_name=name, night_routine_config=night_routine_config, seizure_config=seizure_config,
+        )
         self.last_frame_count = -1
         self.prev_frame_time = time.time()
         self.fps = 0.0
@@ -299,8 +302,16 @@ class CameraPipeline:
             )
 
         person_label = self.tracker.registered_id if self.person_tracker is not None else None
+        person_point = None
+        if self._last_primary is not None:
+            x1, y1, x2, y2 = self._last_primary["bbox"]
+            # Base da caixa delimitadora (pes), normalizada - mais estavel
+            # que o centro da caixa para checar "esta na zona da cama"
+            # (EVT-10): o centro de uma pessoa em pe fica bem acima da cama
+            # mesmo estando ao lado dela.
+            person_point = ((x1 + x2) / 2.0 / w, y2 / h)
         events = self.event_engine.update(
-            pose_data, blend_data, now=now, person_label=person_label,
+            pose_data, blend_data, now=now, person_label=person_label, person_point=person_point,
         )
 
         self.fps = 1.0 / max(1e-5, (now - self.prev_frame_time))
@@ -398,6 +409,8 @@ def main():
             pose_fps=app_config.pipeline_rates.pose_fps,
             face_fps=app_config.pipeline_rates.face_fps,
             gesture_fps=app_config.pipeline_rates.gesture_fps,
+            night_routine_config=app_config.night_routine,
+            seizure_config=app_config.seizure_detection,
         )
         for cam in app_config.cameras
     ]

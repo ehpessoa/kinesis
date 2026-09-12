@@ -1,7 +1,20 @@
 """Schemas Pydantic de configuração (config.json) e agenda de contatos (contacts.json)."""
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def _validate_time_of_day(value: str) -> str:
+    """Valida uma string HH:MM (00-23 / 00-59) — compartilhado por todo
+    horário de configuração do projeto (check-ins, janela noturna do
+    EVT-10) para não duplicar a mesma checagem em cada schema."""
+    parts = value.split(":")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"Horario invalido: '{value}' (use o formato HH:MM).")
+    hour, minute = int(parts[0]), int(parts[1])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Horario invalido: '{value}' (use o formato HH:MM).")
+    return value
 
 
 class CameraSourceConfig(BaseModel):
@@ -151,12 +164,7 @@ class CheckinConfig(BaseModel):
     @classmethod
     def _validate_times(cls, value: List[str]) -> List[str]:
         for item in value:
-            parts = item.split(":")
-            if len(parts) != 2 or not all(p.isdigit() for p in parts):
-                raise ValueError(f"Horario de check-in invalido: '{item}' (use o formato HH:MM).")
-            hour, minute = int(parts[0]), int(parts[1])
-            if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                raise ValueError(f"Horario de check-in invalido: '{item}' (use o formato HH:MM).")
+            _validate_time_of_day(item)
         return value
 
 
@@ -191,6 +199,80 @@ class RemoteServerConfig(BaseModel):
         return self
 
 
+class NightRoutineConfig(BaseModel):
+    """EVT-10 (Ausência da Cama no Horário Noturno) — mitigação do item da
+    matriz assistencial que dependia de duas capacidades que não existiam
+    antes desta etapa: uma zona espacial configurável (a cama) e uma janela
+    horária. Implementadas aqui como o mínimo necessário para o evento
+    funcionar, não como um editor visual completo (ver ressalva abaixo).
+
+    `bed_zone` é um polígono em coordenadas NORMALIZADAS (0.0-1.0, relativas
+    à largura/altura do frame) — assim a mesma configuração vale mesmo que a
+    resolução da câmera mude. Para definir os pontos: pause um frame de
+    referência (ex: um print da GUI), meça a posição de cada canto da cama
+    em pixels e divida pela largura/altura da imagem. Não há (ainda) uma
+    ferramenta de desenho de zona na GUI — é uma configuração manual em JSON,
+    ver README.
+
+    `night_start`/`night_end` podem cruzar a meia-noite (ex: "22:00"/"06:00")
+    — o motor de eventos trata isso corretamente. Fora dessa janela, EVT-10
+    nunca dispara, mesmo com a pessoa fora da zona da cama.
+
+    Depende de `person_tracking.enabled=true`: sem o rastreamento de pessoa
+    (ByteTrack) não há como saber onde ela está em relação à zona da cama —
+    o schema recusa `night_routine.enabled=true` sem isso (ver AppConfig)."""
+
+    enabled: bool = False
+    bed_zone: List[Tuple[float, float]] = Field(default_factory=list)
+    night_start: str = "22:00"
+    night_end: str = "06:00"
+    absence_threshold_minutes: float = 20.0
+
+    @field_validator("night_start", "night_end")
+    @classmethod
+    def _validate_times(cls, value: str) -> str:
+        return _validate_time_of_day(value)
+
+    @model_validator(mode="after")
+    def _require_bed_zone_when_enabled(self):
+        if self.enabled and len(self.bed_zone) < 3:
+            raise ValueError(
+                "night_routine.bed_zone precisa de pelo menos 3 pontos (poligono) "
+                "quando night_routine.enabled=true."
+            )
+        return self
+
+
+class SeizureDetectionConfig(BaseModel):
+    """EVT-11 (Detecção de Convulsão/Tremores) — estima a frequência
+    dominante de oscilação do pulso via FFT (`BehaviorTracker._analyze_tremor`)
+    numa janela recente, e dispara quando ela cai numa faixa típica de
+    movimento clônico/tremor (`freq_min_hz`-`freq_max_hz`) com amplitude
+    mínima (`min_amplitude`, normalizada pela altura do tronco — invariante
+    à distância da câmera) sustentada por `hold_seconds`.
+
+    ⚠️ **Limiares não calibrados contra convulsões reais** — mesma limitação
+    já documentada para `object_detection.confidence`: este projeto não tem
+    acesso a filmagem real de uma crise convulsiva para calibrar
+    `min_amplitude`. Os padrões são uma estimativa de engenharia a partir da
+    faixa de frequência de movimento clônico citada na literatura geral, não
+    uma calibração clínica. **Desabilitado por padrão** por isso — para
+    EVT-11 (severidade Crítica), tanto o falso-negativo quanto o
+    falso-positivo recorrente (fadiga de alerta) são riscos reais.
+
+    `freq_max_hz` tem que ficar folgadamente abaixo da metade de
+    `pipeline_rates.pose_fps` (limite de Nyquist da FFT) — com o padrão
+    `pose_fps=18`, o limite é 9Hz; `freq_max_hz=6.0` mantém margem. Reduzir
+    `pose_fps` sem reduzir `freq_max_hz` na mesma proporção faz a estimativa
+    de frequência perder confiabilidade."""
+
+    enabled: bool = False
+    freq_min_hz: float = 2.0
+    freq_max_hz: float = 6.0
+    min_amplitude: float = 0.05
+    hold_seconds: float = 3.0
+
+
 class StorageConfig(BaseModel):
     """Retenção e expurgo automático do histórico de eventos persistido em
     SQLite (`data/events.db`, ver `src/storage/event_log.py`). Sem isso, o
@@ -216,11 +298,22 @@ class AppConfig(BaseModel):
     checkins: CheckinConfig = Field(default_factory=CheckinConfig)
     remote_server: RemoteServerConfig = Field(default_factory=RemoteServerConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    night_routine: NightRoutineConfig = Field(default_factory=NightRoutineConfig)
+    seizure_detection: SeizureDetectionConfig = Field(default_factory=SeizureDetectionConfig)
 
     @model_validator(mode="after")
     def _ensure_at_least_one_camera(self):
         if not self.cameras:
             raise ValueError("config.json precisa declarar ao menos uma camera em 'cameras'.")
+        return self
+
+    @model_validator(mode="after")
+    def _night_routine_requires_person_tracking(self):
+        if self.night_routine.enabled and not self.person_tracking.enabled:
+            raise ValueError(
+                "night_routine.enabled=true exige person_tracking.enabled=true "
+                "(EVT-10 precisa saber onde a pessoa esta em relacao a zona da cama)."
+            )
         return self
 
 

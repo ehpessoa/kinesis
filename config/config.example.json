@@ -13,6 +13,8 @@
     "EVT-07": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
     "EVT-08": { "enabled": false, "notify_contact_ids": [] },
     "EVT-09": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
+    "EVT-10": { "enabled": true, "notify_contact_ids": ["filho_carlos", "cuidadora_ana"] },
+    "EVT-11": { "enabled": true, "notify_contact_ids": ["filho_carlos", "cuidadora_ana"] },
     "VOZ-SOCORRO": { "enabled": true, "notify_contact_ids": ["filho_carlos", "cuidadora_ana"] },
     "VOZ-CHAME-ME": { "enabled": true, "notify_contact_ids": ["filho_carlos"] },
     "VOZ-MENSAGEM": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
@@ -62,5 +64,19 @@
   "storage": {
     "retention_hours": 24,
     "purge_interval_minutes": 60
+  },
+  "night_routine": {
+    "enabled": false,
+    "bed_zone": [[0.05, 0.55], [0.55, 0.55], [0.55, 0.98], [0.05, 0.98]],
+    "night_start": "22:00",
+    "night_end": "06:00",
+    "absence_threshold_minutes": 20
+  },
+  "seizure_detection": {
+    "enabled": false,
+    "freq_min_hz": 2.0,
+    "freq_max_hz": 6.0,
+    "min_amplitude": 0.05,
+    "hold_seconds": 3.0
   }
 }

@@ -9,7 +9,10 @@ from config.schemas import (
     CheckinConfig,
     Contact,
     ContactsFile,
+    NightRoutineConfig,
+    PersonTrackingConfig,
     RemoteServerConfig,
+    SeizureDetectionConfig,
 )
 
 
@@ -101,12 +104,12 @@ def test_checkin_config_defaults():
 
 
 def test_checkin_config_rejects_invalid_hour():
-    with pytest.raises(ValueError, match="Horario de check-in invalido"):
+    with pytest.raises(ValueError, match="Horario invalido"):
         CheckinConfig(times=["25:00"])
 
 
 def test_checkin_config_rejects_malformed_time():
-    with pytest.raises(ValueError, match="Horario de check-in invalido"):
+    with pytest.raises(ValueError, match="Horario invalido"):
         CheckinConfig(times=["horario_invalido"])
 
 
@@ -129,6 +132,55 @@ def test_storage_config_defaults():
     config = AppConfig()
     assert config.storage.retention_hours == 24.0
     assert config.storage.purge_interval_minutes == 60.0
+
+
+def test_night_routine_config_defaults_disabled():
+    config = AppConfig()
+    assert config.night_routine.enabled is False
+    assert config.night_routine.bed_zone == []
+
+
+def test_night_routine_config_requires_bed_zone_when_enabled():
+    with pytest.raises(ValueError, match="bed_zone"):
+        NightRoutineConfig(enabled=True, bed_zone=[(0.0, 0.0), (1.0, 0.0)])  # so 2 pontos
+
+
+def test_night_routine_config_accepts_polygon_when_enabled():
+    config = NightRoutineConfig(enabled=True, bed_zone=[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
+    assert len(config.bed_zone) == 3
+
+
+def test_night_routine_config_rejects_invalid_time_format():
+    with pytest.raises(ValueError, match="Horario invalido"):
+        NightRoutineConfig(night_start="25:00")
+
+
+def test_app_config_rejects_night_routine_without_person_tracking():
+    with pytest.raises(ValueError, match="person_tracking"):
+        AppConfig(
+            night_routine=NightRoutineConfig(enabled=True, bed_zone=[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]),
+            person_tracking=PersonTrackingConfig(enabled=False),
+        )
+
+
+def test_app_config_allows_night_routine_with_person_tracking():
+    config = AppConfig(
+        night_routine=NightRoutineConfig(enabled=True, bed_zone=[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]),
+        person_tracking=PersonTrackingConfig(enabled=True),
+    )
+    assert config.night_routine.enabled is True
+
+
+def test_seizure_detection_config_defaults_disabled():
+    config = AppConfig()
+    assert config.seizure_detection.enabled is False
+    assert config.seizure_detection.freq_min_hz == 2.0
+    assert config.seizure_detection.freq_max_hz == 6.0
+
+
+def test_seizure_detection_config_accepts_custom_thresholds():
+    config = SeizureDetectionConfig(enabled=True, freq_min_hz=1.5, freq_max_hz=7.0, min_amplitude=0.1)
+    assert config.freq_max_hz == 7.0
 
 
 def test_save_and_load_contacts_roundtrip(tmp_path, monkeypatch):
