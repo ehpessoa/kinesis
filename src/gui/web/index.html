@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>Kinesis SMA-TR</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="styles.css" />
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 h-screen overflow-hidden flex flex-col">
+
+  <header class="flex items-center justify-between px-6 py-3 border-b border-slate-800 bg-slate-900 shrink-0">
+    <div class="flex items-center gap-3">
+      <span class="text-xl">👁️</span>
+      <h1 class="text-lg font-semibold">Kinesis <span class="text-slate-400 font-normal">SMA-TR</span></h1>
+    </div>
+    <nav class="flex gap-1" id="tabs">
+      <button data-tab="dashboard" class="tab-btn active">Dashboard</button>
+      <button data-tab="events" class="tab-btn">Matriz de Eventos</button>
+      <button data-tab="contacts" class="tab-btn">Contatos</button>
+      <button data-tab="config" class="tab-btn">Configuração</button>
+    </nav>
+  </header>
+
+  <main class="flex-1 overflow-auto p-6">
+
+    <section id="tab-dashboard" class="tab-panel grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2 space-y-4">
+        <div class="bg-slate-900 rounded-xl border border-slate-800 p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <span class="badge-live">● LIVE</span>
+              <span id="fps-badge" class="badge-fps">-- FPS</span>
+            </div>
+            <select id="camera-select" class="bg-slate-800 text-sm rounded px-2 py-1 border border-slate-700"></select>
+          </div>
+          <div class="relative aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center">
+            <canvas id="video-canvas" class="max-w-full max-h-full"></canvas>
+            <div id="video-placeholder" class="absolute text-slate-500 text-sm">Aguardando frame da câmera...</div>
+          </div>
+        </div>
+
+        <div class="bg-slate-900 rounded-xl border border-slate-800 p-4">
+          <h2 class="text-sm font-semibold text-slate-300 mb-3">Status das Conexões</h2>
+          <div id="status-cards" class="grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+        </div>
+      </div>
+
+      <div class="bg-slate-900 rounded-xl border border-slate-800 p-4 flex flex-col max-h-[calc(100vh-9rem)]">
+        <div class="flex items-center justify-between mb-3 shrink-0">
+          <h2 class="text-sm font-semibold text-slate-300">Log de Alertas Recentes</h2>
+          <span id="alert-count" class="text-xs text-slate-500">0 evento(s)</span>
+        </div>
+        <div id="alert-feed" class="space-y-2 overflow-auto flex-1"></div>
+      </div>
+    </section>
+
+    <section id="tab-events" class="tab-panel hidden">
+      <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-800/60 text-slate-400 text-left">
+            <tr>
+              <th class="px-4 py-2">Evento</th>
+              <th class="px-4 py-2">Categoria</th>
+              <th class="px-4 py-2">Severidade</th>
+              <th class="px-4 py-2">Habilitado</th>
+              <th class="px-4 py-2">Notificar</th>
+              <th class="px-4 py-2">Testar</th>
+            </tr>
+          </thead>
+          <tbody id="events-tbody"></tbody>
+        </table>
+      </div>
+      <p class="text-xs text-slate-500 mt-3">Eventos esmaecidos (EVT-05, EVT-10, EVT-11, EVT-12) ainda não estão implementados no motor de eventos — ver README.</p>
+    </section>
+
+    <section id="tab-contacts" class="tab-panel hidden space-y-4">
+      <div class="flex justify-between items-center">
+        <h2 class="text-sm font-semibold text-slate-300">Agenda de Contatos</h2>
+        <button id="btn-add-contact" class="btn-primary">+ Adicionar Contato</button>
+      </div>
+      <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-800/60 text-slate-400 text-left">
+            <tr>
+              <th class="px-4 py-2">Nome</th>
+              <th class="px-4 py-2">Parentesco</th>
+              <th class="px-4 py-2">WhatsApp</th>
+              <th class="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody id="contacts-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-config" class="tab-panel hidden max-w-lg space-y-4">
+      <div class="bg-slate-900 rounded-xl border border-slate-800 p-4">
+        <h2 class="text-sm font-semibold text-slate-300 mb-3">Integração WhatsApp</h2>
+        <label class="field-label">Device ID
+          <input id="cfg-device-id" class="field-input" />
+        </label>
+        <label class="field-label">Endpoint
+          <input id="cfg-endpoint" class="field-input" placeholder="https://zap.mydomain.com/send" />
+        </label>
+        <label class="field-label">Token
+          <input id="cfg-token" type="password" class="field-input" />
+        </label>
+        <div class="flex items-center gap-3 mt-2">
+          <button id="btn-save-whatsapp" class="btn-primary">Salvar</button>
+          <span id="whatsapp-save-status" class="text-xs text-slate-500"></span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="contact-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 class="text-sm font-semibold mb-3">Novo Contato</h3>
+      <label class="field-label">Nome<input id="modal-name" class="field-input" /></label>
+      <label class="field-label">Parentesco<input id="modal-relationship" class="field-input" /></label>
+      <label class="field-label">WhatsApp (com DDI)<input id="modal-number" class="field-input" placeholder="5511999998888" /></label>
+      <div class="flex justify-end gap-2 mt-4">
+        <button id="modal-cancel" class="btn-secondary">Cancelar</button>
+        <button id="modal-save" class="btn-primary">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

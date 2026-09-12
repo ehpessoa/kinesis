@@ -12,7 +12,9 @@ src/capture/       -> ThreadedCamera: captura em thread própria, com reconexão
 src/vision/        -> detectores MediaPipe (download de modelos, desenho de landmarks)
 src/behavior/      -> BehaviorTracker (cinemática/expressões) + EventEngine (matriz de eventos)
 src/notifications/ -> WhatsAppNotifier (HTTPS + retry com backoff exponencial)
-main.py            -> orquestra N CameraPipeline (1 por câmera) e despacha notificações
+src/gui/           -> GuiBridge (QWebChannel) + MainWindow (PyQt6) + web/ (HTML/CSS/JS)
+main.py            -> orquestra N CameraPipeline (1 por câmera) via janelas cv2.imshow
+gui_main.py        -> mesma orquestração, apresentada como dashboard PyQt6/HTML
 ```
 
 Para cada fonte de câmera configurada, o `main.py` cria um `CameraPipeline` **independente**, com:
@@ -89,26 +91,50 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ---
 
-## 🛣️ Roteiro (próximas fases, fora do escopo desta entrega)
+## 🖥️ GUI Desktop Híbrida (PyQt6 + QWebEngineView + QWebChannel)
 
-* **Detecção de objetos (YOLOv8)** para bengalas/andadores e zonas de risco (pré-requisito de EVT-12).
-* **Módulo de voz offline** (Silero VAD + faster-whisper + Piper TTS + NLU) para comandos de mensagem por voz.
-* **GUI Desktop Híbrida** (PyQt6 + QWebEngineView + QWebChannel + HTML/CSS/JS), substituindo as janelas `cv2.imshow` atuais.
+`gui_main.py` é uma apresentação alternativa a `main.py`: em vez de janelas `cv2.imshow`, abre uma janela PyQt6 com um `QWebEngineView` carregando o dashboard local (`src/gui/web/index.html` via `file://`, **sem nenhum servidor HTTP**). Reaproveita `CameraPipeline`/`NotificationDispatcher` de `main.py` — a captura, visão, comportamento e eventos são exatamente os mesmos.
 
-Essas três fases exigem dependências pesadas (PyQt6-WebEngine, Whisper, Piper), microfone e display reais para validação — não foram portadas nesta etapa para não entregar código não verificável como se estivesse pronto.
+* **`src/gui/bridge.py` (`GuiBridge`):** `QObject` registrado no `QWebChannel` como `bridge`. Um `QTimer` (~30 Hz, em `main_window.py`) chama `bridge.tick()`, que processa todas as câmeras a cada iteração (eventos disparam para todas, mesmo as não exibidas), emitindo:
+  * `frameReady(source_name, jpeg_base64)` — frame da câmera **selecionada**, para o `<canvas>` do dashboard.
+  * `eventLogged(json)` — cada `EventNotification` disparado, para o feed de alertas.
+  * `statusChanged(json)` — conectividade de câmeras/WhatsApp/voz, a cada 1s.
+  * `metricsUpdated(json)` — FPS da câmera selecionada.
+  * Slots invocáveis do JS: `get_initial_state`, `select_camera`, `set_event_enabled`, `set_event_contacts`, `add_contact`, `delete_contact`, `save_whatsapp_config`, `test_alert` — todos persistindo em `config.json`/`contacts.json` via `config/loader.py` quando aplicável.
+* **`src/gui/web/`:** `index.html` + `styles.css` (Tailwind via CDN, dark mode) + `app.js`, com 4 abas: Dashboard (vídeo ao vivo + status + log de alertas), Matriz de Eventos (toggle/severidade/destinatários por evento, incluindo um botão "Testar"), Contatos (tabela + modal de cadastro) e Configuração (endpoint/token do WhatsApp).
+
+> ⚠️ A aba Matriz de Eventos lista os 12 eventos da especificação, mas EVT-05/10/11/12 aparecem esmaecidos e desabilitados — a GUI não escapa a lacuna documentada na seção anterior, apenas a exibe.
+
+**Validação neste ambiente:** sem display real, testado com `QT_QPA_PLATFORM=offscreen` — `QWebEngineView`/`QWebChannel` (incluído o roundtrip JS↔Python), todos os slots do bridge (com persistência real em disco) e o disparo de notificação WhatsApp de ponta a ponta (HTTP mockado) foram exercitados com sucesso, com os detectores MediaPipe reais processando frames sintéticos. `--no-sandbox`/`QTWEBENGINE_DISABLE_SANDBOX` só é necessário para rodar o Chromium embutido como root (caso deste sandbox); um usuário final comum não precisa disso.
 
 ---
 
 ## ▶️ Como Executar
 
 ```bash
-pip install opencv-python mediapipe numpy pydantic httpx
+pip install opencv-python mediapipe numpy pydantic httpx PyQt6 PyQt6-WebEngine
+
 cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp
 cp config/contacts.example.json config/contacts.json  # edite os contatos reais
-python main.py
+
+python main.py       # janelas cv2.imshow (uma por câmera)
+# ou
+python gui_main.py   # dashboard PyQt6 + HTML/CSS/JS
 ```
 
-Pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar todas as fontes.
+Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar todas as fontes. Em `gui_main.py`, basta fechar a janela.
+
+---
+
+## 🛣️ Roteiro (próximas fases, fora do escopo desta entrega)
+
+* **Detecção de objetos (YOLOv8)** para bengalas/andadores e zonas de risco (pré-requisito de EVT-12).
+* **Módulo de voz offline** (Silero VAD + faster-whisper + Piper TTS + NLU) para comandos de mensagem por voz.
+* **Zonas espaciais configuráveis** no frame (cama, escada, fogão) — destrava EVT-10 e EVT-12.
+* **Otimização de frame-rate por pipeline** (Pose 15-20 FPS / Face 5-10 FPS) para hardware sem GPU.
+* **`requirements.txt`/`pyproject.toml` e suíte de testes automatizada** (a validação atual é ad-hoc, não commitada como testes).
+
+O módulo de voz em particular exige microfone real para validação de verdade — não foi portado nesta etapa.
 
 ---
 
