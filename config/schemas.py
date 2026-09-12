@@ -50,12 +50,29 @@ class WhatsAppConfig(BaseModel):
     backoff_base_seconds: float = 2.0
 
 
+class ObjectDetectionConfig(BaseModel):
+    """Detecção de dispositivos de mobilidade assistiva (bengala, andador,
+    cadeira de rodas) via YOLO-World. Desabilitada por padrão: traz uma
+    dependência pesada (ultralytics/torch, ~600MB de pesos na 1a execução)
+    que nem todo dispositivo de borda deve pagar.
+
+    `confidence` default é conservador (0.35): em teste neste projeto, ruído
+    puro gerou falsos positivos com confiança de até ~0.31 (ver README) — um
+    limiar baixo deixa a leitura do HUD pouco confiável. Calibre com imagens
+    reais do ambiente de instalação antes de usar o valor em produção."""
+
+    enabled: bool = False
+    confidence: float = 0.35
+    frame_interval: int = 5  # roda a deteccao a cada N frames (mitiga custo de CPU)
+
+
 class AppConfig(BaseModel):
     cameras: List[CameraSourceConfig] = Field(
         default_factory=lambda: [CameraSourceConfig(name="Webcam Local", index=0)]
     )
     events: Dict[str, EventRuleConfig] = Field(default_factory=dict)
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
+    object_detection: ObjectDetectionConfig = Field(default_factory=ObjectDetectionConfig)
 
     @model_validator(mode="after")
     def _ensure_at_least_one_camera(self):

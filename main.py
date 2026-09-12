@@ -73,7 +73,7 @@ class CameraPipeline:
     """Tudo que é específico de UMA fonte de vídeo: captura, detectores
     MediaPipe (com timeline própria), BehaviorTracker e EventEngine."""
 
-    def __init__(self, name: str, src):
+    def __init__(self, name: str, src, object_detector=None, object_detect_interval: int = 5):
         self.name = name
         self.cam = ThreadedCamera(src, name=name).start()
         self.tracker = BehaviorTracker()
@@ -81,6 +81,16 @@ class CameraPipeline:
         self.last_frame_count = -1
         self.prev_frame_time = time.time()
         self.fps = 0.0
+
+        # Detector de dispositivos de mobilidade (bengala/andador/cadeira de
+        # rodas): compartilhado entre todas as CameraPipeline (sem estado
+        # entre frames, ao contrario dos detectores MediaPipe acima) e
+        # rodado a cada N frames (object_detect_interval) para nao pesar a
+        # CPU a cada frame — ver src/vision/object_detector.py.
+        self.object_detector = object_detector
+        self.object_detect_interval = max(1, object_detect_interval)
+        self._object_frame_counter = 0
+        self._last_mobility_detections = []
 
         self.pose_detector = PoseLandmarker.create_from_options(PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=POSE_MODEL_PATH),
@@ -154,6 +164,14 @@ class CameraPipeline:
                 draw_landmarks(frame, hand_landmarks, HAND_CONNECTIONS, w, h, (255, 120, 255), radius=2)
             gestures = self.tracker.analyze_gestures(gesture_results)
 
+        if self.object_detector is not None:
+            self._object_frame_counter += 1
+            if self._object_frame_counter % self.object_detect_interval == 0:
+                self._last_mobility_detections = self.object_detector.detect(frame)
+            if self._last_mobility_detections:
+                from src.vision.object_detector import draw_object_detections
+                draw_object_detections(frame, self._last_mobility_detections)
+
         events = self.event_engine.update(pose_data, blend_data, now=time.time())
 
         curr_frame_time = time.time()
@@ -171,15 +189,17 @@ class CameraPipeline:
             "fall_alert": pose_data["fall_alert"],
             "gestures": gestures,
             "events": events,
+            "mobility_aids": sorted({d["label"] for d in self._last_mobility_detections}),
         }
         return frame, metrics
 
     def render(self, frame, metrics):
         h, w, _ = frame.shape
         gestures_text = ", ".join(f"{side}: {label}" for side, label in metrics["gestures"].items()) or "Nenhum"
+        mobility_text = ", ".join(metrics["mobility_aids"]) or "Nenhum"
 
         overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (420, 320), (20, 20, 20), -1)
+        cv2.rectangle(overlay, (10, 10), (420, 350), (20, 20, 20), -1)
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
 
         cv2.putText(frame, f"Fonte: {self.name}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
@@ -191,7 +211,8 @@ class CameraPipeline:
         cv2.putText(frame, f"Braco Levantado: {'Sim' if metrics['arm_raised'] else 'Nao'}", (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 255, 200), 2)
         cv2.putText(frame, f"Mao no Rosto: {'Sim' if metrics['hand_near_face'] else 'Nao'}", (20, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 255, 200), 2)
         cv2.putText(frame, f"Gestos: {gestures_text}", (20, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 120, 255), 2)
-        cv2.putText(frame, f"FPS: {self.fps:.1f}", (20, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(frame, f"Dispositivos: {mobility_text}", (20, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
+        cv2.putText(frame, f"FPS: {self.fps:.1f}", (20, 340), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
         if metrics["fall_alert"]:
             cv2.rectangle(frame, (0, 0), (w, h), (0, 0, 255), 6)
@@ -217,7 +238,20 @@ def main():
     notifier = WhatsAppNotifier(app_config.whatsapp)
     dispatcher = NotificationDispatcher(app_config, contacts, notifier)
 
-    pipelines = [CameraPipeline(name=cam.name, src=cam.resolve_src()) for cam in app_config.cameras]
+    object_detector = None
+    if app_config.object_detection.enabled:
+        from src.vision.object_detector import MobilityAidDetector
+        print("Carregando detector de dispositivos de mobilidade (YOLO-World)... pode levar um tempo na 1a execucao.")
+        object_detector = MobilityAidDetector(confidence=app_config.object_detection.confidence)
+
+    pipelines = [
+        CameraPipeline(
+            name=cam.name, src=cam.resolve_src(),
+            object_detector=object_detector,
+            object_detect_interval=app_config.object_detection.frame_interval,
+        )
+        for cam in app_config.cameras
+    ]
 
     print(f"SMA-TR iniciado com {len(pipelines)} camera(s). Pressione 'q' em qualquer janela para sair.")
 

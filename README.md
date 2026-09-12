@@ -9,7 +9,7 @@ O **Kinesis / SMA-TR** é uma solução de monitoramento comportamental e assist
 ```
 config/            -> config.json / contacts.json (não versionados) + schemas Pydantic
 src/capture/       -> ThreadedCamera: captura em thread própria, com reconexão automática
-src/vision/        -> detectores MediaPipe (download de modelos, desenho de landmarks)
+src/vision/        -> detectores MediaPipe + MobilityAidDetector (YOLO-World)
 src/behavior/      -> BehaviorTracker (cinemática/expressões) + EventEngine (matriz de eventos)
 src/notifications/ -> WhatsAppNotifier (HTTPS + retry com backoff exponencial)
 src/gui/           -> GuiBridge (QWebChannel) + MainWindow (PyQt6) + web/ (HTML/CSS/JS)
@@ -91,6 +91,21 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ---
 
+## 🦯 Detecção de Dispositivos de Mobilidade (YOLO-World)
+
+`src/vision/object_detector.py` (`MobilityAidDetector`) identifica **bengala, andador e cadeira de rodas** no frame — objetos relevantes para avaliar risco de queda e rotina do idoso.
+
+**Por que YOLO-World e não YOLOv8 "comum":** os pesos YOLOv8 pré-treinados padrão usam as 80 classes do COCO (pessoa, cadeira, sofá, TV...) e **não incluem bengala, andador nem cadeira de rodas em nenhuma delas**. Treinar um modelo customizado exigiria coletar e rotular um dataset próprio — fora de escopo. Em vez disso, usamos o **YOLO-World** (detecção de vocabulário aberto): cada caixa candidata é comparada contra embeddings de texto (CLIP) das classes que definimos em `MOBILITY_AID_PROMPTS`, permitindo detectar categorias arbitrárias por descrição textual.
+
+* O encoder de texto padrão do YOLO-World (CLIP da OpenAI) baixa pesos de um host bloqueado pela política de rede usada para construir este projeto. A implementação troca automaticamente para o **MobileCLIP** (Apple), servido pelos releases do GitHub da Ultralytics — mesmo resultado, host compatível. Esse encoder só é usado **uma vez**, no carregamento (para calcular os embeddings das 3 classes); a detecção por frame usa somente o backbone YOLO.
+* **Desabilitado por padrão** (`config.json → object_detection.enabled = false`): a dependência (`ultralytics`, que traz `torch`/`torchvision`) baixa ~600MB de pesos na primeira execução (modelo YOLO-World ~27MB + encoder de texto MobileCLIP ~570MB, cacheados em `models/`) — peso que nem todo dispositivo de borda deve pagar.
+* `frame_interval` (padrão 5): a detecção **não** roda em todo frame — neste projeto, uma chamada em CPU levou ~800ms em imagens 640×480, então roda a cada N frames processados, mantendo a última detecção nos frames intermediários.
+* `confidence` (padrão 0.35): em teste com ruído puro (imagem 100% aleatória, sem nenhum objeto real), o modelo ainda produziu falsos positivos com confiança de até ~0.31 — um limiar baixo deixa a leitura pouco confiável. **Este valor não foi calibrado contra fotos reais de bengala/andador/cadeira de rodas** (este ambiente não tem acesso a esse tipo de imagem) — ajuste com filmagem real do ambiente de instalação antes de confiar no resultado.
+* As detecções aparecem como caixas rotuladas sobre o próprio frame (visível tanto nas janelas `cv2.imshow` quanto no `<canvas>` da GUI, sem nenhuma mudança adicional necessária) e na linha "Dispositivos:" do HUD. **Não** alimentam o `EventEngine` nem disparam notificações — dado que a confiança não foi validada contra imagens reais, avisar cuidadores com base nisso seria arriscado (falso alerta). É contexto visual, não um evento da matriz.
+* Serve de base para o EVT-12 (zona de risco), que ainda depende de zonas espaciais configuráveis (ver Roteiro).
+
+---
+
 ## 🖥️ GUI Desktop Híbrida (PyQt6 + QWebEngineView + QWebChannel)
 
 `gui_main.py` é uma apresentação alternativa a `main.py`: em vez de janelas `cv2.imshow`, abre uma janela PyQt6 com um `QWebEngineView` carregando o dashboard local (`src/gui/web/index.html` via `file://`, **sem nenhum servidor HTTP**). Reaproveita `CameraPipeline`/`NotificationDispatcher` de `main.py` — a captura, visão, comportamento e eventos são exatamente os mesmos.
@@ -113,8 +128,9 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ```bash
 pip install opencv-python mediapipe numpy pydantic httpx PyQt6 PyQt6-WebEngine
+pip install ultralytics  # opcional: só necessário se object_detection.enabled=true
 
-cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp
+cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp/deteccao de objetos
 cp config/contacts.example.json config/contacts.json  # edite os contatos reais
 
 python main.py       # janelas cv2.imshow (uma por câmera)
@@ -128,10 +144,10 @@ Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar 
 
 ## 🛣️ Roteiro (próximas fases, fora do escopo desta entrega)
 
-* **Detecção de objetos (YOLOv8)** para bengalas/andadores e zonas de risco (pré-requisito de EVT-12).
 * **Módulo de voz offline** (Silero VAD + faster-whisper + Piper TTS + NLU) para comandos de mensagem por voz.
-* **Zonas espaciais configuráveis** no frame (cama, escada, fogão) — destrava EVT-10 e EVT-12.
-* **Otimização de frame-rate por pipeline** (Pose 15-20 FPS / Face 5-10 FPS) para hardware sem GPU.
+* **Zonas espaciais configuráveis** no frame (cama, escada, fogão) — destrava EVT-10 e EVT-12 (a detecção de objetos que EVT-12 também precisa já existe, ver seção acima).
+* **Calibração de `object_detection.confidence`** contra fotos/filmagem reais de bengala, andador e cadeira de rodas — não pôde ser feita neste ambiente.
+* **Otimização de frame-rate por pipeline** (Pose 15-20 FPS / Face 5-10 FPS) para hardware sem GPU — a detecção de objetos já tem seu próprio throttle (`frame_interval`), mas os detectores MediaPipe ainda rodam em todo frame.
 * **`requirements.txt`/`pyproject.toml` e suíte de testes automatizada** (a validação atual é ad-hoc, não commitada como testes).
 
 O módulo de voz em particular exige microfone real para validação de verdade — não foi portado nesta etapa.

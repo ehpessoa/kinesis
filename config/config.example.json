@@ -20,5 +20,10 @@
     "token": "SEU_TOKEN_AQUI",
     "max_retries": 4,
     "backoff_base_seconds": 2.0
+  },
+  "object_detection": {
+    "enabled": false,
+    "confidence": 0.35,
+    "frame_interval": 5
   }
 }

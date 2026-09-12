@@ -25,7 +25,21 @@ def main():
     contacts = load_contacts()
     notifier = WhatsAppNotifier(app_config.whatsapp)
     dispatcher = NotificationDispatcher(app_config, contacts, notifier)
-    pipelines = [CameraPipeline(name=cam.name, src=cam.resolve_src()) for cam in app_config.cameras]
+
+    object_detector = None
+    if app_config.object_detection.enabled:
+        from src.vision.object_detector import MobilityAidDetector
+        print("Carregando detector de dispositivos de mobilidade (YOLO-World)... pode levar um tempo na 1a execucao.")
+        object_detector = MobilityAidDetector(confidence=app_config.object_detection.confidence)
+
+    pipelines = [
+        CameraPipeline(
+            name=cam.name, src=cam.resolve_src(),
+            object_detector=object_detector,
+            object_detect_interval=app_config.object_detection.frame_interval,
+        )
+        for cam in app_config.cameras
+    ]
 
     qt_app = QApplication(sys.argv)
     bridge = GuiBridge(pipelines, app_config, contacts, notifier, dispatcher)
