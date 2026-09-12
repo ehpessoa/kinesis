@@ -1,0 +1,6 @@
+{
+  "contacts": [
+    { "id": "filho_carlos", "name": "Carlos", "relationship": "Filho", "whatsapp_number": "5511999998888" },
+    { "id": "cuidadora_ana", "name": "Ana", "relationship": "Cuidadora", "whatsapp_number": "5511977776666" }
+  ]
+}

@@ -1,10 +1,14 @@
-"""Pipeline multi-fonte: webcam local, câmera IP na rede Wi-Fi local e câmera IP
-remota acessada via sub-rede Tailscale (5G) — ver README para o guia de setup
-do hardware. As três fontes rodam concorrentemente, cada uma com sua própria
-thread de captura, seus próprios detectores MediaPipe e seu próprio
-BehaviorTracker, para não misturar estado/tracking entre streams independentes.
+"""Ponto de entrada do SMA-TR: orquestra N CameraPipeline (uma por fonte de
+câmera configurada em config/config.json), cada uma com seus próprios
+detectores MediaPipe, BehaviorTracker e EventEngine, e despacha as
+notificações de evento via WhatsApp conforme a matriz de eventos configurada.
+
+GUI (PyQt6/QWebEngine) e módulo de voz (VAD/Whisper/Piper) ainda não foram
+portados para esta base — a apresentação continua em janelas OpenCV.
 """
+import threading
 import time
+from typing import Optional
 
 import cv2
 import mediapipe as mp
@@ -20,10 +24,13 @@ from mediapipe.tasks.python.vision import (
     RunningMode,
 )
 
-from capture import ThreadedCamera
-from config import load_camera_sources
-from tracking import (
-    BehaviorTracker,
+from config.loader import load_app_config, load_contacts
+from config.schemas import AppConfig, ContactsFile
+from src.behavior.event_engine import EventEngine, EventNotification
+from src.behavior.tracker import BehaviorTracker
+from src.capture.threaded_camera import ThreadedCamera
+from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64
+from src.vision.detectors import (
     FACE_CONNECTIONS,
     FACE_MODEL_PATH,
     GESTURE_MODEL_PATH,
@@ -35,14 +42,42 @@ from tracking import (
 )
 
 
+class NotificationDispatcher:
+    """Encaminha EventNotification para os contatos configurados via WhatsApp,
+    respeitando a matriz de eventos (habilitado/desabilitado, destinatários)."""
+
+    def __init__(self, config: AppConfig, contacts: ContactsFile, notifier: WhatsAppNotifier):
+        self.config = config
+        self.contacts = contacts
+        self.notifier = notifier
+
+    def dispatch(self, event: EventNotification, frame_b64: Optional[str]):
+        rule = self.config.events.get(event.event_id)
+        if rule is None or not rule.enabled:
+            return
+        if rule.severity_override:
+            event = event.model_copy(update={"severity": rule.severity_override})
+
+        for contact_id in rule.notify_contact_ids:
+            contact = self.contacts.find(contact_id)
+            if contact is None or not contact.whatsapp_number:
+                continue
+            threading.Thread(
+                target=self.notifier.send_event,
+                args=(event, contact.whatsapp_number, frame_b64),
+                daemon=True,
+            ).start()
+
+
 class CameraPipeline:
-    """Agrupa tudo que é específico de UMA fonte de vídeo: captura, detectores
-    MediaPipe (com sua própria linha de tempo) e o tracker comportamental."""
+    """Tudo que é específico de UMA fonte de vídeo: captura, detectores
+    MediaPipe (com timeline própria), BehaviorTracker e EventEngine."""
 
     def __init__(self, name: str, src):
         self.name = name
         self.cam = ThreadedCamera(src, name=name).start()
         self.tracker = BehaviorTracker()
+        self.event_engine = EventEngine(source_name=name)
         self.last_frame_count = -1
         self.prev_frame_time = time.time()
         self.fps = 0.0
@@ -72,8 +107,8 @@ class CameraPipeline:
 
     def process_next_frame(self):
         """Lê o frame mais recente e roda a análise. Retorna None se não há
-        frame novo desde a última chamada (evita timestamp duplicado no
-        MediaPipe, que exige timestamps estritamente crescentes)."""
+        frame novo desde a última chamada (evita timestamp duplicado, que o
+        MediaPipe rejeita por exigir timestamps estritamente crescentes)."""
         ret, frame, frame_count = self.cam.read()
         if not ret or frame is None or frame_count == self.last_frame_count:
             return None
@@ -87,47 +122,56 @@ class CameraPipeline:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
         # Timestamp local ao contador de frames desta fonte: monotonico mesmo
-        # que a câmera fique momentaneamente sem sinal e reconecte.
+        # que a camera fique momentaneamente sem sinal e reconecte.
         timestamp_ms = frame_count
 
         pose_results = self.pose_detector.detect_for_video(mp_image, timestamp_ms)
         face_results = self.face_detector.detect_for_video(mp_image, timestamp_ms)
         gesture_results = self.gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
 
-        metrics = {
-            "emotion": "N/A", "head_pose": "N/A", "posture": "N/A", "motion": "N/A",
-            "arm_raised": False, "hand_near_face": False, "drowsy_alert": False,
-            "fall_alert": False, "gestures": {},
+        pose_data = {
+            "posture": "N/A", "dynamic_state": "Estatico", "fall_alert": False,
+            "arm_raised": False, "hand_near_face": False, "torso_h": 0.0,
         }
+        blend_data = {"emotion": "N/A", "drowsy_alert": False, "distress_score": 0.0}
+        head_pose = "N/A"
+        gestures = {}
 
         if face_results.face_landmarks:
             for face_landmarks in face_results.face_landmarks:
-                metrics["head_pose"] = self.tracker.estimate_head_pose(face_landmarks, w, h)
+                head_pose = self.tracker.estimate_head_pose(face_landmarks, w, h)
                 draw_landmarks(frame, face_landmarks, FACE_CONNECTIONS, w, h, (0, 255, 255), radius=1)
             if face_results.face_blendshapes:
                 blend_data = self.tracker.analyze_blendshapes(face_results.face_blendshapes[0])
-                metrics["emotion"] = blend_data["emotion"]
-                metrics["drowsy_alert"] = blend_data["drowsy_alert"]
 
         if pose_results.pose_landmarks:
             for pose_landmarks in pose_results.pose_landmarks:
                 draw_landmarks(frame, pose_landmarks, POSE_CONNECTIONS, w, h, (100, 255, 100), radius=3)
                 pose_data = self.tracker.analyze_pose(pose_landmarks, w, h)
-                metrics["posture"] = pose_data["posture"]
-                metrics["motion"] = pose_data["dynamic_state"]
-                metrics["fall_alert"] = pose_data["fall_alert"]
-                metrics["arm_raised"] = pose_data["arm_raised"]
-                metrics["hand_near_face"] = pose_data["hand_near_face"]
 
         if gesture_results.hand_landmarks:
             for hand_landmarks in gesture_results.hand_landmarks:
                 draw_landmarks(frame, hand_landmarks, HAND_CONNECTIONS, w, h, (255, 120, 255), radius=2)
-            metrics["gestures"] = self.tracker.analyze_gestures(gesture_results)
+            gestures = self.tracker.analyze_gestures(gesture_results)
+
+        events = self.event_engine.update(pose_data, blend_data, now=time.time())
 
         curr_frame_time = time.time()
         self.fps = 1.0 / max(1e-5, (curr_frame_time - self.prev_frame_time))
         self.prev_frame_time = curr_frame_time
 
+        metrics = {
+            "emotion": blend_data["emotion"],
+            "head_pose": head_pose,
+            "posture": pose_data["posture"],
+            "motion": pose_data["dynamic_state"],
+            "arm_raised": pose_data["arm_raised"],
+            "hand_near_face": pose_data["hand_near_face"],
+            "drowsy_alert": blend_data["drowsy_alert"],
+            "fall_alert": pose_data["fall_alert"],
+            "gestures": gestures,
+            "events": events,
+        }
         return frame, metrics
 
     def render(self, frame, metrics):
@@ -156,7 +200,7 @@ class CameraPipeline:
             cv2.rectangle(frame, (0, 0), (w, h), (0, 140, 255), 6)
             cv2.putText(frame, "ALERTA: SINAL DE SONOLENCIA!", (30, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 140, 255), 3)
 
-        cv2.imshow(f"Kinesis - {self.name}", frame)
+        cv2.imshow(f"Kinesis SMA-TR - {self.name}", frame)
 
     def close(self):
         self.cam.stop()
@@ -168,10 +212,14 @@ class CameraPipeline:
 def main():
     ensure_models_downloaded()
 
-    sources = load_camera_sources()
-    pipelines = [CameraPipeline(name=src.name, src=src.src) for src in sources]
+    app_config = load_app_config()
+    contacts = load_contacts()
+    notifier = WhatsAppNotifier(app_config.whatsapp)
+    dispatcher = NotificationDispatcher(app_config, contacts, notifier)
 
-    print(f"Pipeline Multi-Fonte iniciado com {len(pipelines)} camera(s). Pressione 'q' em qualquer janela para sair.")
+    pipelines = [CameraPipeline(name=cam.name, src=cam.resolve_src()) for cam in app_config.cameras]
+
+    print(f"SMA-TR iniciado com {len(pipelines)} camera(s). Pressione 'q' em qualquer janela para sair.")
 
     try:
         while True:
@@ -182,11 +230,17 @@ def main():
                 frame, metrics = result
                 pipeline.render(frame, metrics)
 
+                for event in metrics["events"]:
+                    print(f"[{event.severity}] {event.event_id} ({pipeline.name}): {event.message}")
+                    frame_b64 = encode_frame_jpeg_base64(frame)
+                    dispatcher.dispatch(event, frame_b64)
+
             if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
                 break
     finally:
         for pipeline in pipelines:
             pipeline.close()
+        notifier.close()
         cv2.destroyAllWindows()
 
 

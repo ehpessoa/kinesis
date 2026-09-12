@@ -1,0 +1,24 @@
+{
+  "cameras": [
+    { "name": "Webcam Local (Cenario 1)", "index": 0 },
+    { "name": "Intelbras Wi-Fi Local (Cenario 2)", "ip": "192.168.1.108", "user": "admin", "password": "CHAVE_ACESSO_1" },
+    { "name": "Intelbras 5G Remota via Tailscale (Cenario 3)", "ip": "192.168.8.150", "user": "admin", "password": "CHAVE_ACESSO_2" }
+  ],
+  "events": {
+    "EVT-01": { "enabled": true, "notify_contact_ids": ["filho_carlos"] },
+    "EVT-02": { "enabled": true, "notify_contact_ids": ["filho_carlos"] },
+    "EVT-03": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
+    "EVT-04": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
+    "EVT-06": { "enabled": true, "notify_contact_ids": ["filho_carlos", "cuidadora_ana"] },
+    "EVT-07": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
+    "EVT-08": { "enabled": false, "notify_contact_ids": [] },
+    "EVT-09": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] }
+  },
+  "whatsapp": {
+    "device_id": "SMA-RES-01042",
+    "endpoint": "https://zap.mydomain.com/send",
+    "token": "SEU_TOKEN_AQUI",
+    "max_retries": 4,
+    "backoff_base_seconds": 2.0
+  }
+}

@@ -1,81 +1,16 @@
-"""Download de modelos, desenho de landmarks e análise comportamental/cinemática.
-
-BehaviorTracker mantém estado entre frames (histórico de quadril, velocidade dos
-punhos, tempo de olhos fechados). Por isso cada fonte de câmera precisa da sua
-própria instância: compartilhar um tracker entre câmeras misturaria o estado de
-pessoas/cenas diferentes.
-"""
-import os
+"""Máquina de estados, cinemática corporal e expressões faciais de UMA única
+fonte de vídeo. Instancie um BehaviorTracker por câmera/pessoa monitorada —
+compartilhar a mesma instância entre fontes misturaria o estado de pessoas
+ou cenas diferentes."""
 import time
-import urllib.request
 from collections import deque
 
-import cv2
 import numpy as np
 
-from mediapipe.tasks.python.vision import (
-    FaceLandmarksConnections,
-    HandLandmarksConnections,
-    PoseLandmarksConnections,
-)
-
-MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-POSE_MODEL_PATH = os.path.join(MODELS_DIR, "pose_landmarker_lite.task")
-FACE_MODEL_PATH = os.path.join(MODELS_DIR, "face_landmarker.task")
-GESTURE_MODEL_PATH = os.path.join(MODELS_DIR, "gesture_recognizer.task")
-
-MODEL_URLS = {
-    POSE_MODEL_PATH: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
-    FACE_MODEL_PATH: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
-    GESTURE_MODEL_PATH: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task",
-}
-
-
-def ensure_models_downloaded():
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    for path, url in MODEL_URLS.items():
-        if not os.path.exists(path):
-            print(f"Baixando modelo: {os.path.basename(path)}...")
-            urllib.request.urlretrieve(url, path)
-
-
-POSE_CONNECTIONS = [(c.start, c.end) for c in PoseLandmarksConnections.POSE_LANDMARKS]
-FACE_CONNECTIONS = [
-    (c.start, c.end)
-    for c in (
-        FaceLandmarksConnections.FACE_LANDMARKS_FACE_OVAL
-        + FaceLandmarksConnections.FACE_LANDMARKS_LEFT_EYE
-        + FaceLandmarksConnections.FACE_LANDMARKS_LEFT_EYEBROW
-        + FaceLandmarksConnections.FACE_LANDMARKS_RIGHT_EYE
-        + FaceLandmarksConnections.FACE_LANDMARKS_RIGHT_EYEBROW
-        + FaceLandmarksConnections.FACE_LANDMARKS_LIPS
-    )
-]
-HAND_CONNECTIONS = [(c.start, c.end) for c in HandLandmarksConnections.HAND_CONNECTIONS]
-
-GESTURE_LABELS = {
-    "Closed_Fist": "Punho Fechado",
-    "Open_Palm": "Palma Aberta",
-    "Pointing_Up": "Apontando p/ Cima",
-    "Thumb_Down": "Joinha Negativo",
-    "Thumb_Up": "Joinha Positivo",
-    "Victory": "Sinal de Vitoria",
-    "ILoveYou": "Eu Te Amo",
-}
-
-
-def draw_landmarks(frame, landmarks, connections, frame_w, frame_h, color, radius=2):
-    points = [(int(lm.x * frame_w), int(lm.y * frame_h)) for lm in landmarks]
-    for start, end in connections:
-        cv2.line(frame, points[start], points[end], color, 1)
-    for point in points:
-        cv2.circle(frame, point, radius, color, -1)
+from src.vision.detectors import GESTURE_LABELS
 
 
 class BehaviorTracker:
-    """Gerencia a máquina de estados, cinemática corporal e expressões faciais
-    de UMA única fonte de vídeo. Instancie uma por câmera/pessoa monitorada."""
-
     def __init__(self, history_len: int = 15):
         self.history_len = history_len
         self.hip_y_history = deque(maxlen=history_len)
@@ -112,6 +47,10 @@ class BehaviorTracker:
         else:
             emotion = "Neutro"
 
+        # EVT-09: indicador de dor/distress, independente do rotulo mutuamente
+        # exclusivo de "emotion" acima (dor pode coexistir com outras leituras).
+        distress_score = (brow_down + frown + nose_sneer) / 3.0
+
         drowsy_alert = False
         now = time.time()
         if eye_blink > 0.55:
@@ -122,7 +61,7 @@ class BehaviorTracker:
         else:
             self.eyes_closed_since = None
 
-        return {"emotion": emotion, "drowsy_alert": drowsy_alert}
+        return {"emotion": emotion, "drowsy_alert": drowsy_alert, "distress_score": distress_score}
 
     def estimate_head_pose(self, face_landmarks, frame_w, frame_h) -> str:
         nose = face_landmarks[1]
