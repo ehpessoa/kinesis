@@ -11,12 +11,13 @@ config/            -> config.json / contacts.json (não versionados) + schemas P
 src/capture/       -> ThreadedCamera: captura em thread própria, com reconexão automática
 src/vision/        -> detectores MediaPipe + MobilityAidDetector (YOLO-World) + PersonTracker (ByteTrack) + RateLimiter
 src/behavior/      -> BehaviorTracker (cinemática/expressões) + EventEngine (matriz de eventos)
+src/audio/         -> CameraAudioCapture + SpeechTranscriber + EmergencyIntentMatcher + VoiceController
 src/notifications/ -> WhatsAppNotifier (HTTPS + retry com backoff exponencial)
 src/storage/       -> EventLogger (JSONL) + PendingNotificationQueue (fila durável de WhatsApp)
 src/gui/           -> GuiBridge (QWebChannel) + MainWindow (PyQt6) + web/ (HTML/CSS/JS)
 main.py            -> orquestra N CameraPipeline (1 por câmera) via janelas cv2.imshow
 gui_main.py        -> mesma orquestração, apresentada como dashboard PyQt6/HTML
-tests/             -> suíte pytest (config, EventEngine, WhatsApp, storage, pipeline)
+tests/             -> suíte pytest (config, EventEngine, WhatsApp, storage, pipeline, voz)
 ```
 
 Para cada fonte de câmera configurada, o `main.py` cria um `CameraPipeline` **independente**, com:
@@ -93,6 +94,40 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ---
 
+## 🎙️ Módulo de Voz: Comandos de Emergência
+
+`src/audio/` identifica comandos de emergência ditos em voz alta a partir do áudio da câmera (ou do microfone local, para webcam) e dispara a mesma notificação por WhatsApp usada pelos eventos de visão — **sem** o pipeline de diálogo bidirecional completo do plano original (Silero VAD + confirmação falada + TTS): aqui a entrada é reconhecimento de palavra-chave sobre o texto transcrito, que é o que este pedido específico precisa.
+
+**Frases reconhecidas** (`src/audio/intent_matcher.py`, testado com 30+ variações):
+
+| Dito | Intenção | Ação |
+| :--- | :--- | :--- |
+| "me liga", "liga pra mim" | `CALL_ME` | Notifica os contatos configurados em `VOZ-CHAME-ME` |
+| "socorro", "estou com problemas", "preciso de ajuda", "não estou bem"... | `HELP` | Notifica os contatos configurados em `VOZ-SOCORRO` |
+| "envia uma mensagem" [para \<nome\>] | `SEND_MESSAGE` | Com nome resolvido: direto ao contato. Sem nome (ou não resolvido): notifica `VOZ-MENSAGEM` |
+| "chama o/a \<nome\>", "liga pro/pra \<nome\>" | `CALL_CONTACT` | Direto ao contato cujo nome bate com o dito. Nome não reconhecido: **nada é enviado** (evita notificar a pessoa errada) |
+
+### Arquitetura
+
+1. **`camera_audio_capture.py` (`CameraAudioCapture`):** para uma câmera RTSP, extrai a faixa de áudio via um subprocesso `ffmpeg` (`-vn -acodec pcm_s16le -ar 16000 -ac 1`) — independente da captura de vídeo do OpenCV, que só decodifica frames de imagem. Para webcam local (fonte numérica), não existe "áudio da câmera" acessível via OpenCV — o microfone do notebook/webcam USB é exposto pelo sistema como um dispositivo separado, então a captura usa o microfone padrão via `sounddevice` como aproximação prática. Em ambos os casos, a ausência do recurso (ffmpeg não instalado, nenhum dispositivo de áudio) desliga a captura silenciosamente, sem derrubar o resto do pipeline.
+2. **`transcriber.py` (`SpeechTranscriber`):** ASR via `faster-whisper`, carregado de forma tardia (só na primeira transcrição real).
+3. **`intent_matcher.py` (`EmergencyIntentMatcher`):** casamento de padrões (regex) sobre o texto normalizado (minúsculas, sem acentos) — não é NLU, é exatamente o "identificar por palavras-chave" pedido.
+4. **`voice_controller.py` (`VoiceController`):** orquestra captura → transcrição → intenção → despacho, numa thread própria por câmera, desacoplada do laço de vídeo. Usa `NotificationDispatcher.dispatch_to_contact()` (novo método) para os casos `CALL_CONTACT`/`SEND_MESSAGE`-com-nome, que devem ir a um destinatário específico e não à lista `notify_contact_ids` configurada do evento.
+
+**Cada câmera tem seu próprio `SpeechTranscriber`** (não compartilhado): modelos de ASR não são seguros para chamadas concorrentes vindas de threads diferentes, e cada `VoiceController` roda na sua própria thread — ao contrário do `MobilityAidDetector`, sempre chamado sequencialmente pelo laço de vídeo de uma única thread.
+
+### ⚠️ Bloqueio de rede real encontrado nesta sessão
+
+O download automático de modelo do `faster-whisper` usa o **Hugging Face Hub** (`huggingface.co`). No ambiente usado para construir este projeto, esse host retornou **403 (bloqueio de política de rede)** — confirmado também para `openaipublic.azureedge.net` (Whisper original da OpenAI) e `alphacephei.com` (modelos Vosk). As três fontes de modelo de ASR mais comuns estavam bloqueadas; não foi possível, portanto, **validar a transcrição de fala com um modelo real** neste ambiente.
+
+O que **foi** validado de ponta a ponta com dados reais:
+* Extração de áudio via `ffmpeg` (mesmo comando usado para câmeras RTSP), contra um arquivo de voz sintetizado com `espeak-ng`.
+* Todos os 4 tipos de intenção, roteamento genérico vs. direto-a-contato, resolução de nome falado contra `contacts.json`, respeito à flag `enabled` da matriz de eventos, e a thread de orquestração completa — tudo com o transcritor mockado (texto fixo no lugar da inferência real), já que o **casamento de padrões é o núcleo do pedido** e isso não depende do modelo de ASR.
+
+Se sua rede também bloquear esses hosts, defina `voice.model_dir` em `config.json` apontando para uma pasta com um modelo já convertido para o formato CTranslate2 (baixe em uma máquina com acesso e copie a pasta) — `SpeechTranscriber` usa esse caminho local em vez de tentar o download.
+
+---
+
 ## 🗄️ Persistência de Eventos e Fila Durável de Notificações
 
 `src/storage/` mitiga dois gaps reais que não estavam no plano original, mas apareceram assim que o sistema saiu da fase de PoC:
@@ -107,7 +142,7 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ## 🧪 Suíte de Testes (`tests/`)
 
-Toda a validação até esta etapa era feita com scripts ad-hoc, descartados ao fim de cada sessão — sem nenhuma proteção contra regressão. `tests/` converte essa validação em uma suíte pytest committada (54 testes): schemas/config (`test_config.py`), matriz de eventos (`test_event_engine.py`), cliente WhatsApp com HTTP mockado (`test_whatsapp_client.py`), `RateLimiter` (`test_rate_limiter.py`), persistência (`test_storage.py`, incluindo o cenário de "processo cai no meio do envio" com `redeliver_pending`), rastreamento de pessoa com YOLO mockado (`test_person_tracker.py`), `CameraPipeline` de ponta a ponta com câmera e detectores reais (`test_camera_pipeline.py`), e detecção de objetos (`test_object_detector.py` — os testes que carregam o modelo real de ~600MB são pulados automaticamente se os pesos ainda não estiverem cacheados em `models/`).
+Toda a validação até esta etapa era feita com scripts ad-hoc, descartados ao fim de cada sessão — sem nenhuma proteção contra regressão. `tests/` converte essa validação em uma suíte pytest committada (110+ testes): schemas/config (`test_config.py`), matriz de eventos (`test_event_engine.py`), cliente WhatsApp com HTTP mockado (`test_whatsapp_client.py`), `RateLimiter` (`test_rate_limiter.py`), persistência (`test_storage.py`, incluindo os cenários de "processo cai no meio do envio" com `redeliver_pending` e `dispatch_to_contact`), rastreamento de pessoa com YOLO mockado (`test_person_tracker.py`), `CameraPipeline` de ponta a ponta com câmera e detectores reais (`test_camera_pipeline.py`), detecção de objetos (`test_object_detector.py` — os testes que carregam o modelo real de ~600MB são pulados automaticamente se os pesos ainda não estiverem cacheados em `models/`), e o módulo de voz (`test_intent_matcher.py`, `test_camera_audio_capture.py` — inclui extração real via `ffmpeg` de áudio sintetizado com `espeak-ng`, `test_transcriber.py` e `test_voice_controller.py` — o teste com um modelo de ASR real é pulado a menos que `KINESIS_WHISPER_MODEL_DIR` esteja definido, ver seção do módulo de voz).
 
 ```bash
 pip install -r requirements-dev.txt
@@ -181,10 +216,14 @@ pytest
 ## ▶️ Como Executar
 
 ```bash
+# Dependencia de sistema para o modulo de voz (extracao de audio de RTSP);
+# opcional se voice.enabled permanecer false.
+apt-get install -y ffmpeg
+
 pip install -r requirements.txt
 # (dev/testes: pip install -r requirements-dev.txt)
 
-cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp/deteccao/rastreamento
+cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp/deteccao/rastreamento/voz
 cp config/contacts.example.json config/contacts.json  # edite os contatos reais
 
 python main.py       # janelas cv2.imshow (uma por câmera)
@@ -198,7 +237,9 @@ Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar 
 
 ## 🛣️ Roteiro (próximas fases, fora do escopo desta entrega)
 
-* **Módulo de voz offline** (Silero VAD + faster-whisper + Piper TTS + NLU) para comandos de mensagem por voz.
+* **Validar o módulo de voz com um modelo de ASR real e áudio de câmera real** — bloqueado neste ambiente (Hugging Face Hub, Azure CDN da OpenAI e alphacephei.com/Vosk todos retornaram 403 de política de rede); ver seção do módulo de voz para como habilitar com `voice.model_dir` numa rede sem esse bloqueio.
+* **VAD (Voice Activity Detection, ex: Silero) antes da transcrição** — hoje `VoiceController` transcreve toda janela de `chunk_seconds`, mesmo silêncio; um VAD evitaria chamadas de ASR desnecessárias.
+* **Confirmação falada e TTS** (Piper) para o fluxo completo de ditado de mensagem do plano original — o escopo desta etapa foi deliberadamente restrito a identificação por palavra-chave + envio direto, sem diálogo.
 * **Zonas espaciais configuráveis** no frame (cama, escada, fogão) — destrava EVT-10 e EVT-12 (a detecção de objetos que EVT-12 também precisa já existe, ver seção acima).
 * **Calibração de `object_detection.confidence`** contra fotos/filmagem reais de bengala, andador e cadeira de rodas — não pôde ser feita neste ambiente.
 * **`BehaviorTracker`/`EventEngine` por pessoa** (não só por câmera): hoje, com múltiplas pessoas em cena, o rastreamento (ByteTrack) sabe distinguir cada uma, mas a análise de pose/rosto/gestos ainda segue só a pessoa "principal" escolhida.
@@ -206,8 +247,6 @@ Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar 
 * **Recalibrar os limiares de detecção de queda caso `pipeline_rates.pose_fps` seja reduzido** — o histórico de quadris/punhos é contado em amostras, não segundos (ver seção de otimização de frame rate acima).
 * **Rotação/retenção de `data/events.jsonl`** — o `EventLogger` é somente-anexação, sem limite de tamanho; para uma instalação de longa duração, girar ou compactar o arquivo periodicamente é responsabilidade externa (ex: logrotate).
 * **CI (GitHub Actions ou similar) rodando `pytest` a cada push** — a suíte existe e passa localmente, mas nada a executa automaticamente ainda.
-
-O módulo de voz em particular exige microfone real para validação de verdade — não foi portado nesta etapa.
 
 ---
 

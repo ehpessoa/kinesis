@@ -11,7 +11,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 
 from config.loader import load_app_config, load_contacts
-from main import CameraPipeline, NotificationDispatcher
+from main import CameraPipeline, NotificationDispatcher, create_voice_controllers
 from src.gui.bridge import GuiBridge
 from src.gui.main_window import MainWindow
 from src.notifications.whatsapp_client import WhatsAppNotifier
@@ -50,9 +50,11 @@ def main():
     ]
 
     event_logger = EventLogger()
+    voice_controllers = create_voice_controllers(app_config, contacts, dispatcher, event_logger)
 
     qt_app = QApplication(sys.argv)
-    bridge = GuiBridge(pipelines, app_config, contacts, notifier, dispatcher, event_logger=event_logger)
+    bridge = GuiBridge(pipelines, app_config, contacts, notifier, dispatcher,
+                        event_logger=event_logger, voice_controllers=voice_controllers)
     window = MainWindow(bridge)
     window.show()
     sys.exit(qt_app.exec())

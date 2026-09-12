@@ -84,6 +84,30 @@ class NotificationDispatcher:
                 daemon=True,
             ).start()
 
+    def dispatch_to_contact(self, event: EventNotification, contact_id: str, frame_b64: Optional[str] = None) -> bool:
+        """Envia diretamente a UM contato especifico, sem passar pelo
+        fan-out para os `notify_contact_ids` configurados do evento (quem
+        deve receber ja e conhecido - ex: modulo de voz com "chama o
+        Carlos"). Ainda assim respeita a flag `enabled` da matriz `events`,
+        se houver uma regra configurada para este event_id - do contrario
+        desabilitar um evento na GUI nao teria efeito sobre este caminho."""
+        rule = self.config.events.get(event.event_id)
+        if rule is not None and not rule.enabled:
+            return False
+        if rule is not None and rule.severity_override:
+            event = event.model_copy(update={"severity": rule.severity_override})
+
+        contact = self.contacts.find(contact_id)
+        if contact is None or not contact.whatsapp_number:
+            return False
+        record_id = self.queue.enqueue(event.model_dump(mode="json"), contact.whatsapp_number, frame_b64)
+        threading.Thread(
+            target=self._send_and_finalize,
+            args=(record_id, event, contact.whatsapp_number, frame_b64),
+            daemon=True,
+        ).start()
+        return True
+
     def _send_and_finalize(self, record_id: str, event: EventNotification, recipient_number: str, frame_b64: Optional[str]):
         if self.notifier.send_event(event, recipient_number, frame_b64):
             self.queue.mark_delivered(record_id)
@@ -366,6 +390,8 @@ def main():
         for cam in app_config.cameras
     ]
 
+    voice_controllers = create_voice_controllers(app_config, contacts, dispatcher, event_logger)
+
     print(f"SMA-TR iniciado com {len(pipelines)} camera(s). Pressione 'q' em qualquer janela para sair.")
 
     try:
@@ -388,8 +414,38 @@ def main():
     finally:
         for pipeline in pipelines:
             pipeline.close()
+        for controller in voice_controllers:
+            controller.stop()
         notifier.close()
         cv2.destroyAllWindows()
+
+
+def create_voice_controllers(app_config: AppConfig, contacts: ContactsFile, dispatcher, event_logger):
+    """Um VoiceController por câmera, cada um com sua própria captura de
+    áudio e seu próprio SpeechTranscriber (modelos de ASR não são seguros
+    para chamadas concorrentes vindas de threads diferentes, e cada
+    VoiceController roda na sua própria thread — diferente do
+    MobilityAidDetector, chamado sempre sequencialmente pelo laço de
+    vídeo). Reaproveitado por main.py e gui_main.py."""
+    if not app_config.voice.enabled:
+        return []
+
+    from src.audio.transcriber import SpeechTranscriber
+    from src.audio.voice_controller import VoiceController
+
+    controllers = []
+    for cam in app_config.cameras:
+        transcriber = SpeechTranscriber(
+            model_size=app_config.voice.model_size, language=app_config.voice.language,
+            model_dir=app_config.voice.model_dir,
+        )
+        controller = VoiceController(
+            source_name=cam.name, audio_source=cam.resolve_src(), contacts=contacts,
+            dispatcher=dispatcher, event_logger=event_logger, transcriber=transcriber,
+            language=app_config.voice.language, chunk_seconds=app_config.voice.chunk_seconds,
+        ).start()
+        controllers.append(controller)
+    return controllers
 
 
 if __name__ == "__main__":

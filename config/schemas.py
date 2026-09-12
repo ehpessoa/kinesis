@@ -100,6 +100,33 @@ class PipelineRateConfig(BaseModel):
     gesture_fps: float = 8.0
 
 
+class VoiceConfig(BaseModel):
+    """Identificação de comandos de emergência por voz ("me liga", "estou
+    com problemas", "envia uma mensagem", "chama o <nome>" — ver
+    src/audio/intent_matcher.py) a partir do áudio da câmera (RTSP) ou,
+    para webcam local, do microfone padrão do sistema (ver
+    src/audio/camera_audio_capture.py).
+
+    Desabilitado por padrão: depende de `faster-whisper` (ASR) e, por
+    padrão, baixa um modelo do Hugging Face Hub na primeira execução — um
+    host que pode estar bloqueado em alguns ambientes de rede restrita
+    (foi o caso no ambiente usado para construir este projeto). Se for o
+    seu caso, baixe o modelo manualmente em uma máquina com acesso e
+    aponte `model_dir` para a pasta convertida (ver README).
+
+    Os comandos genéricos ("me liga", "socorro"/"estou com problemas",
+    "envia uma mensagem" sem nome) são roteados pela MESMA matriz `events`
+    usada pelos eventos de visão (chaves VOZ-CHAME-ME, VOZ-SOCORRO,
+    VOZ-MENSAGEM, VOZ-CHAMAR-CONTATO — ver config.example.json), e não por
+    um campo de destinatários próprio."""
+
+    enabled: bool = False
+    language: str = "pt"
+    model_size: str = "small"
+    model_dir: Optional[str] = None
+    chunk_seconds: float = 4.0
+
+
 class AppConfig(BaseModel):
     cameras: List[CameraSourceConfig] = Field(
         default_factory=lambda: [CameraSourceConfig(name="Webcam Local", index=0)]
@@ -109,6 +136,7 @@ class AppConfig(BaseModel):
     object_detection: ObjectDetectionConfig = Field(default_factory=ObjectDetectionConfig)
     person_tracking: PersonTrackingConfig = Field(default_factory=PersonTrackingConfig)
     pipeline_rates: PipelineRateConfig = Field(default_factory=PipelineRateConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
 
     @model_validator(mode="after")
     def _ensure_at_least_one_camera(self):

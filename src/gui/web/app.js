@@ -59,7 +59,10 @@ function renderStatusCards() {
     "WhatsApp API", state.status.whatsapp_configured ? "on" : "off",
     state.status.whatsapp_configured ? "Configurado" : "Sem endpoint",
   ));
-  container.appendChild(statusCard("Voz", "na", "Não implementado"));
+  container.appendChild(statusCard(
+    "Voz", state.status.voice_available ? "on" : "na",
+    state.status.voice_available ? "Ativo" : "Desabilitado",
+  ));
 }
 
 function renderEventsTable() {

@@ -15,3 +15,12 @@ ultralytics==8.4.149
 # em vez de main.py (janelas cv2.imshow).
 PyQt6==6.11.0
 PyQt6-WebEngine==6.11.0
+
+# Módulo de voz (voice.enabled=true, desabilitado por padrão). faster-whisper
+# baixa um modelo do Hugging Face Hub na 1a execução — se esse host estiver
+# bloqueado na sua rede, veja voice.model_dir no README. sounddevice só é
+# usado como microfone de fallback para webcam local (câmera RTSP usa o
+# ffmpeg do sistema para extrair a faixa de áudio, sem dependência Python
+# adicional — precisa do binário `ffmpeg` instalado).
+faster-whisper==1.2.1
+sounddevice==0.5.6

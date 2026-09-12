@@ -12,7 +12,11 @@
     "EVT-06": { "enabled": true, "notify_contact_ids": ["filho_carlos", "cuidadora_ana"] },
     "EVT-07": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
     "EVT-08": { "enabled": false, "notify_contact_ids": [] },
-    "EVT-09": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] }
+    "EVT-09": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
+    "VOZ-SOCORRO": { "enabled": true, "notify_contact_ids": ["filho_carlos", "cuidadora_ana"] },
+    "VOZ-CHAME-ME": { "enabled": true, "notify_contact_ids": ["filho_carlos"] },
+    "VOZ-MENSAGEM": { "enabled": true, "notify_contact_ids": ["cuidadora_ana"] },
+    "VOZ-CHAMAR-CONTATO": { "enabled": true, "notify_contact_ids": [] }
   },
   "whatsapp": {
     "device_id": "SMA-RES-01042",
@@ -35,5 +39,12 @@
     "pose_fps": 18.0,
     "face_fps": 8.0,
     "gesture_fps": 8.0
+  },
+  "voice": {
+    "enabled": false,
+    "language": "pt",
+    "model_size": "small",
+    "model_dir": null,
+    "chunk_seconds": 4.0
   }
 }

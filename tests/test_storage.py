@@ -153,3 +153,68 @@ def test_dispatch_ignores_disabled_or_unconfigured_events(tmp_path):
 
     time.sleep(0.1)
     assert dispatcher.queue.list_pending() == {}
+
+
+# --- NotificationDispatcher.dispatch_to_contact (usado pelo modulo de voz) ---
+
+def _make_dispatcher(tmp_path, events=None):
+    from main import NotificationDispatcher
+
+    sent = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: (sent.append(json.loads(r.read())), httpx.Response(200))[1]
+    ))
+    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example/send", max_retries=1)
+    notifier = WhatsAppNotifier(whatsapp_config, client=client)
+    app_config = AppConfig(
+        cameras=[CameraSourceConfig(name="Teste", index=0)],
+        whatsapp=whatsapp_config, events=events or {},
+    )
+    contacts = ContactsFile(contacts=[Contact(id="carlos", name="Carlos", whatsapp_number="5511999998888")])
+    dispatcher = NotificationDispatcher(
+        app_config, contacts, notifier, queue=PendingNotificationQueue(path=str(tmp_path / "pending.json"))
+    )
+    return dispatcher, sent
+
+
+def test_dispatch_to_contact_sends_to_named_contact_directly(tmp_path):
+    dispatcher, sent = _make_dispatcher(tmp_path)
+
+    ok = dispatcher.dispatch_to_contact(make_event(event_id="VOZ-CHAMAR-CONTATO"), "carlos")
+
+    assert ok is True
+    time.sleep(0.3)
+    assert len(sent) == 1
+    assert sent[0]["recipient_number"] == "5511999998888"
+
+
+def test_dispatch_to_contact_returns_false_for_unknown_contact(tmp_path):
+    dispatcher, sent = _make_dispatcher(tmp_path)
+
+    ok = dispatcher.dispatch_to_contact(make_event(event_id="VOZ-CHAMAR-CONTATO"), "nao_existe")
+
+    assert ok is False
+    assert sent == []
+
+
+def test_dispatch_to_contact_respects_disabled_rule(tmp_path):
+    """Bug real encontrado nesta sessao: dispatch_to_contact nao verificava
+    a flag `enabled` da matriz de eventos, diferente de dispatch()."""
+    dispatcher, sent = _make_dispatcher(
+        tmp_path, events={"VOZ-CHAMAR-CONTATO": EventRuleConfig(enabled=False, notify_contact_ids=[])},
+    )
+
+    ok = dispatcher.dispatch_to_contact(make_event(event_id="VOZ-CHAMAR-CONTATO"), "carlos")
+
+    assert ok is False
+    time.sleep(0.1)
+    assert sent == []
+
+
+def test_dispatch_to_contact_persists_before_send_like_dispatch(tmp_path):
+    dispatcher, sent = _make_dispatcher(tmp_path)
+
+    dispatcher.dispatch_to_contact(make_event(event_id="VOZ-CHAMAR-CONTATO"), "carlos")
+    time.sleep(0.3)
+
+    assert dispatcher.queue.list_pending() == {}  # entregue -> removido da fila

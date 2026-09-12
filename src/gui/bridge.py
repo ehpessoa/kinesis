@@ -17,6 +17,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from config.loader import save_app_config, save_contacts
 from config.schemas import AppConfig, Contact, ContactsFile, EventRuleConfig
+from src.audio.voice_controller import VOICE_EVENT_CATALOG
 from src.behavior.event_engine import EVENT_CATALOG, EventNotification
 from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64
 
@@ -31,6 +32,10 @@ UNIMPLEMENTED_EVENTS = {
     "EVT-12": {"category": "Dispositivos", "name": "Entrada em Zona de Risco", "default_severity": "HIGH"},
 }
 
+# Eventos de visao (EVENT_CATALOG) + eventos de voz (VOICE_EVENT_CATALOG):
+# ambos sao configuraveis pela mesma matriz `events` do config.json.
+IMPLEMENTED_EVENTS = {**EVENT_CATALOG, **VOICE_EVENT_CATALOG}
+
 
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
@@ -44,7 +49,7 @@ class GuiBridge(QObject):
     metricsUpdated = pyqtSignal(str)    # JSON {source_name, fps}
 
     def __init__(self, pipelines: list, app_config: AppConfig, contacts: ContactsFile,
-                 notifier: WhatsAppNotifier, dispatcher, event_logger=None):
+                 notifier: WhatsAppNotifier, dispatcher, event_logger=None, voice_controllers=None):
         super().__init__()
         self.pipelines = pipelines
         self.app_config = app_config
@@ -52,6 +57,7 @@ class GuiBridge(QObject):
         self.notifier = notifier
         self.dispatcher = dispatcher
         self.event_logger = event_logger
+        self.voice_controllers = voice_controllers or []
         self.selected_index = 0
         self._last_status_emit = 0.0
 
@@ -85,19 +91,21 @@ class GuiBridge(QObject):
         return {
             "cameras": [{"name": p.name, "connected": bool(p.cam.grabbed)} for p in self.pipelines],
             "whatsapp_configured": bool(self.app_config.whatsapp.endpoint),
-            "voice_available": False,
+            "voice_available": bool(self.voice_controllers),
         }
 
     def shutdown(self):
         for pipeline in self.pipelines:
             pipeline.close()
+        for controller in self.voice_controllers:
+            controller.stop()
         self.notifier.close()
 
     # --- slots invocaveis pelo JS ---
     @pyqtSlot(result=str)
     def get_initial_state(self) -> str:
         events = {}
-        for event_id, meta in EVENT_CATALOG.items():
+        for event_id, meta in IMPLEMENTED_EVENTS.items():
             rule = self.app_config.events.get(event_id, EventRuleConfig())
             events[event_id] = {
                 "id": event_id, "category": meta["category"], "name": meta["name"],
@@ -128,7 +136,7 @@ class GuiBridge(QObject):
 
     @pyqtSlot(str, bool)
     def set_event_enabled(self, event_id: str, enabled: bool):
-        if event_id not in EVENT_CATALOG:
+        if event_id not in IMPLEMENTED_EVENTS:
             return  # evento ainda nao implementado: a GUI nao deveria habilitar
         rule = self.app_config.events.setdefault(event_id, EventRuleConfig())
         rule.enabled = enabled
@@ -136,7 +144,7 @@ class GuiBridge(QObject):
 
     @pyqtSlot(str, str)
     def set_event_contacts(self, event_id: str, contact_ids_json: str):
-        if event_id not in EVENT_CATALOG:
+        if event_id not in IMPLEMENTED_EVENTS:
             return
         rule = self.app_config.events.setdefault(event_id, EventRuleConfig())
         rule.notify_contact_ids = list(json.loads(contact_ids_json))
@@ -186,7 +194,7 @@ class GuiBridge(QObject):
 
     @pyqtSlot(str)
     def test_alert(self, event_id: str):
-        meta = EVENT_CATALOG.get(event_id) or UNIMPLEMENTED_EVENTS.get(event_id)
+        meta = IMPLEMENTED_EVENTS.get(event_id) or UNIMPLEMENTED_EVENTS.get(event_id)
         if meta is None:
             return
         source_name = self.pipelines[self.selected_index].name if self.pipelines else "Teste"
