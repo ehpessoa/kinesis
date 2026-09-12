@@ -40,6 +40,9 @@ def main():
             person_tracking_enabled=app_config.person_tracking.enabled,
             person_tracking_confidence=app_config.person_tracking.confidence,
             person_tracking_interval=app_config.person_tracking.frame_interval,
+            pose_fps=app_config.pipeline_rates.pose_fps,
+            face_fps=app_config.pipeline_rates.face_fps,
+            gesture_fps=app_config.pipeline_rates.gesture_fps,
         )
         for cam in app_config.cameras
     ]

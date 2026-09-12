@@ -9,7 +9,7 @@ O **Kinesis / SMA-TR** é uma solução de monitoramento comportamental e assist
 ```
 config/            -> config.json / contacts.json (não versionados) + schemas Pydantic
 src/capture/       -> ThreadedCamera: captura em thread própria, com reconexão automática
-src/vision/        -> detectores MediaPipe + MobilityAidDetector (YOLO-World) + PersonTracker (ByteTrack)
+src/vision/        -> detectores MediaPipe + MobilityAidDetector (YOLO-World) + PersonTracker (ByteTrack) + RateLimiter
 src/behavior/      -> BehaviorTracker (cinemática/expressões) + EventEngine (matriz de eventos)
 src/notifications/ -> WhatsAppNotifier (HTTPS + retry com backoff exponencial)
 src/gui/           -> GuiBridge (QWebChannel) + MainWindow (PyQt6) + web/ (HTML/CSS/JS)
@@ -109,6 +109,17 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ---
 
+## ⏱️ Otimização de Taxa de Quadros por Pipeline
+
+`src/vision/rate_limiter.py` (`RateLimiter`) mitiga o item **4.1.1** do plano original ("Processamento Multimodal Completo Simultâneo em Hardware Básico"): processar Pose (33 landmarks), Face Mesh (478 landmarks + 52 blendshapes) e Gesture a cada frame da câmera, sem GPU dedicada, sobrecarrega a CPU. O plano recomenda Pose a 15-20 FPS e Face/Blendshapes a 5-10 FPS — aplicamos o mesmo raciocínio ao Gesture (não especificado no plano, mas com custo comparável ao de Face).
+
+* **Throttle por tempo de parede, não por contagem de frames** (`config.json → pipeline_rates`, default `pose_fps: 18`, `face_fps: 8`, `gesture_fps: 8`): cada detector MediaPipe só roda quando seu próprio limitador permite, no ritmo (Hz) configurado — independente da taxa de captura da câmera. Isso importa porque webcam (~30 FPS) e RTSP (Wi-Fi local ou remoto via VPN, sujeito a jitter de rede) têm taxas de captura bem diferentes; um throttle "a cada N frames" teria um FPS efetivo distinto em cada fonte, enquanto o throttle por segundos garante o mesmo ritmo em qualquer uma.
+* **Entre execuções, reaproveita o último resultado**: os landmarks desenhados no frame e as métricas do HUD (`postura`, `expressão`, `gestos`) continuam vindo da última detecção real, não somem nem "piscam" nos frames em que o detector correspondente não rodou.
+* **Ganho medido neste ambiente:** processando 60 frames sintéticos (640×480) em CPU, com a configuração padrão (18/8/8 fps) o pipeline completo levou 0.99s (~60 FPS efetivos); rodando os três detectores a cada frame (comportamento anterior a esta mitigação) levou 3.10s (~19 FPS efetivos) — **redução de ~68% no tempo de CPU** do pipeline de visão. Também validado que 90 frames processados a 30 FPS simulados geraram só 25 chamadas reais aos três detectores (13 Pose + 6 Face + 6 Gesture), com a taxa mantida entre webcam e RTSP simulados.
+* **Contrapartida documentada, não escondida:** o histórico usado pela detecção de queda (`BehaviorTracker.hip_y_history`/`wrist_speed_history`, `history_len=15`) é contado em *amostras*, não em segundos. Reduzir `pose_fps` alarga a janela de tempo coberta por essas 15 amostras (ex: ~0.5s a 30 FPS vs ~0.83s a 18 FPS) — um efeito colateral esperado da mitigação, não um bug, mas que pode exigir recalibrar os limiares de queda se `pose_fps` for reduzido bem abaixo do padrão.
+
+---
+
 ## 🦯 Detecção de Dispositivos de Mobilidade (YOLO-World)
 
 `src/vision/object_detector.py` (`MobilityAidDetector`) identifica **bengala, andador e cadeira de rodas** no frame — objetos relevantes para avaliar risco de queda e rotina do idoso.
@@ -167,7 +178,7 @@ Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar 
 * **Calibração de `object_detection.confidence`** contra fotos/filmagem reais de bengala, andador e cadeira de rodas — não pôde ser feita neste ambiente.
 * **`BehaviorTracker`/`EventEngine` por pessoa** (não só por câmera): hoje, com múltiplas pessoas em cena, o rastreamento (ByteTrack) sabe distinguir cada uma, mas a análise de pose/rosto/gestos ainda segue só a pessoa "principal" escolhida.
 * **Validação de `PersonTracker`/ByteTrack com pessoas reais em câmera** — só foi possível validar a lógica de escolha do track principal com resultados YOLO mockados; o comportamento com movimento/oclusão reais ainda não foi observado.
-* **Otimização de frame-rate por pipeline** (Pose 15-20 FPS / Face 5-10 FPS) para hardware sem GPU — a detecção de objetos e o rastreamento de pessoa já têm throttle próprio (`frame_interval`), mas os detectores MediaPipe ainda rodam em todo frame.
+* **Recalibrar os limiares de detecção de queda caso `pipeline_rates.pose_fps` seja reduzido** — o histórico de quadris/punhos é contado em amostras, não segundos (ver seção de otimização de frame rate acima).
 * **`requirements.txt`/`pyproject.toml` e suíte de testes automatizada** (a validação atual é ad-hoc, não commitada como testes).
 
 O módulo de voz em particular exige microfone real para validação de verdade — não foi portado nesta etapa.

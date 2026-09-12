@@ -30,5 +30,10 @@
     "enabled": true,
     "confidence": 0.4,
     "frame_interval": 1
+  },
+  "pipeline_rates": {
+    "pose_fps": 18.0,
+    "face_fps": 8.0,
+    "gesture_fps": 8.0
   }
 }

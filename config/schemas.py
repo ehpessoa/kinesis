@@ -82,6 +82,24 @@ class PersonTrackingConfig(BaseModel):
     frame_interval: int = 1
 
 
+class PipelineRateConfig(BaseModel):
+    """Otimização de taxa de quadros por sub-pipeline — mitigação do item
+    4.1.1 do plano ("Processamento Multimodal Completo Simultâneo em
+    Hardware Básico"): rodar Pose, Face e Gesture a cada frame da câmera
+    sobrecarrega CPU sem GPU dedicada. O plano recomenda Pose a 15-20 FPS e
+    Face/Blendshapes a 5-10 FPS; aplicamos o mesmo raciocínio ao Gesture
+    (não especificado no plano, mas tão custoso quanto Face).
+
+    O throttle é por tempo de parede (Hz), não por contagem de frames — ver
+    src/vision/rate_limiter.py — para valer o mesmo ritmo tanto na webcam
+    (~30 FPS) quanto em RTSP (taxa variável). Entre execuções, o último
+    resultado de cada detector é reaproveitado (frame "congelado")."""
+
+    pose_fps: float = 18.0
+    face_fps: float = 8.0
+    gesture_fps: float = 8.0
+
+
 class AppConfig(BaseModel):
     cameras: List[CameraSourceConfig] = Field(
         default_factory=lambda: [CameraSourceConfig(name="Webcam Local", index=0)]
@@ -90,6 +108,7 @@ class AppConfig(BaseModel):
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     object_detection: ObjectDetectionConfig = Field(default_factory=ObjectDetectionConfig)
     person_tracking: PersonTrackingConfig = Field(default_factory=PersonTrackingConfig)
+    pipeline_rates: PipelineRateConfig = Field(default_factory=PipelineRateConfig)
 
     @model_validator(mode="after")
     def _ensure_at_least_one_camera(self):

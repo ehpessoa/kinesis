@@ -40,6 +40,7 @@ from src.vision.detectors import (
     draw_landmarks,
     ensure_models_downloaded,
 )
+from src.vision.rate_limiter import RateLimiter
 
 
 class NotificationDispatcher:
@@ -77,6 +78,7 @@ class CameraPipeline:
         self, name: str, src, object_detector=None, object_detect_interval: int = 5,
         person_tracking_enabled: bool = True, person_tracking_confidence: float = 0.4,
         person_tracking_interval: int = 1,
+        pose_fps: float = 18.0, face_fps: float = 8.0, gesture_fps: float = 8.0,
     ):
         self.name = name
         self.cam = ThreadedCamera(src, name=name).start()
@@ -85,6 +87,25 @@ class CameraPipeline:
         self.last_frame_count = -1
         self.prev_frame_time = time.time()
         self.fps = 0.0
+
+        # Otimizacao de taxa de quadros por sub-pipeline (item 4.1.1 do
+        # plano): Pose/Face/Gesture rodam no maximo ao ritmo configurado
+        # (Hz), nao a cada frame da camera — ver src/vision/rate_limiter.py.
+        # Entre execucoes, o ultimo resultado de cada detector e reaproveitado
+        # (landmarks desenhados continuam do ultimo frame processado).
+        self.pose_rate = RateLimiter(pose_fps)
+        self.face_rate = RateLimiter(face_fps)
+        self.gesture_rate = RateLimiter(gesture_fps)
+        self._last_pose_landmarks_list = []
+        self._last_face_landmarks_list = []
+        self._last_hand_landmarks_list = []
+        self._last_pose_data = {
+            "posture": "N/A", "dynamic_state": "Estatico", "fall_alert": False,
+            "arm_raised": False, "hand_near_face": False, "torso_h": 0.0,
+        }
+        self._last_blend_data = {"emotion": "N/A", "drowsy_alert": False, "distress_score": 0.0}
+        self._last_head_pose = "N/A"
+        self._last_gestures = {}
 
         # Detector de dispositivos de mobilidade (bengala/andador/cadeira de
         # rodas): compartilhado entre todas as CameraPipeline (sem estado
@@ -152,35 +173,43 @@ class CameraPipeline:
         # Timestamp local ao contador de frames desta fonte: monotonico mesmo
         # que a camera fique momentaneamente sem sinal e reconecte.
         timestamp_ms = frame_count
+        now = time.time()
 
-        pose_results = self.pose_detector.detect_for_video(mp_image, timestamp_ms)
-        face_results = self.face_detector.detect_for_video(mp_image, timestamp_ms)
-        gesture_results = self.gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
-
-        pose_data = {
-            "posture": "N/A", "dynamic_state": "Estatico", "fall_alert": False,
-            "arm_raised": False, "hand_near_face": False, "torso_h": 0.0,
-        }
-        blend_data = {"emotion": "N/A", "drowsy_alert": False, "distress_score": 0.0}
-        head_pose = "N/A"
-        gestures = {}
-
-        if face_results.face_landmarks:
-            for face_landmarks in face_results.face_landmarks:
-                head_pose = self.tracker.estimate_head_pose(face_landmarks, w, h)
-                draw_landmarks(frame, face_landmarks, FACE_CONNECTIONS, w, h, (0, 255, 255), radius=1)
+        # Cada detector so roda quando seu RateLimiter permite (Hz proprio,
+        # ver __init__); nos frames "pulados", reaproveita-se o ultimo
+        # resultado (landmarks continuam desenhados, metricas continuam
+        # populadas) em vez de re-inferir a cada frame da camera.
+        if self.face_rate.should_run(now):
+            face_results = self.face_detector.detect_for_video(mp_image, timestamp_ms)
+            self._last_face_landmarks_list = face_results.face_landmarks or []
+            if face_results.face_landmarks:
+                self._last_head_pose = self.tracker.estimate_head_pose(face_results.face_landmarks[0], w, h)
             if face_results.face_blendshapes:
-                blend_data = self.tracker.analyze_blendshapes(face_results.face_blendshapes[0])
+                self._last_blend_data = self.tracker.analyze_blendshapes(face_results.face_blendshapes[0])
+        for face_landmarks in self._last_face_landmarks_list:
+            draw_landmarks(frame, face_landmarks, FACE_CONNECTIONS, w, h, (0, 255, 255), radius=1)
 
-        if pose_results.pose_landmarks:
-            for pose_landmarks in pose_results.pose_landmarks:
-                draw_landmarks(frame, pose_landmarks, POSE_CONNECTIONS, w, h, (100, 255, 100), radius=3)
-                pose_data = self.tracker.analyze_pose(pose_landmarks, w, h)
+        if self.pose_rate.should_run(now):
+            pose_results = self.pose_detector.detect_for_video(mp_image, timestamp_ms)
+            self._last_pose_landmarks_list = pose_results.pose_landmarks or []
+            if pose_results.pose_landmarks:
+                self._last_pose_data = self.tracker.analyze_pose(pose_results.pose_landmarks[0], w, h)
+        for pose_landmarks in self._last_pose_landmarks_list:
+            draw_landmarks(frame, pose_landmarks, POSE_CONNECTIONS, w, h, (100, 255, 100), radius=3)
 
-        if gesture_results.hand_landmarks:
-            for hand_landmarks in gesture_results.hand_landmarks:
-                draw_landmarks(frame, hand_landmarks, HAND_CONNECTIONS, w, h, (255, 120, 255), radius=2)
-            gestures = self.tracker.analyze_gestures(gesture_results)
+        if self.gesture_rate.should_run(now):
+            gesture_results = self.gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
+            self._last_hand_landmarks_list = gesture_results.hand_landmarks or []
+            self._last_gestures = (
+                self.tracker.analyze_gestures(gesture_results) if gesture_results.hand_landmarks else {}
+            )
+        for hand_landmarks in self._last_hand_landmarks_list:
+            draw_landmarks(frame, hand_landmarks, HAND_CONNECTIONS, w, h, (255, 120, 255), radius=2)
+
+        pose_data = self._last_pose_data
+        blend_data = self._last_blend_data
+        head_pose = self._last_head_pose
+        gestures = self._last_gestures
 
         if self.object_detector is not None:
             self._object_frame_counter += 1
@@ -206,12 +235,11 @@ class CameraPipeline:
 
         person_label = self.tracker.registered_id if self.person_tracker is not None else None
         events = self.event_engine.update(
-            pose_data, blend_data, now=time.time(), person_label=person_label,
+            pose_data, blend_data, now=now, person_label=person_label,
         )
 
-        curr_frame_time = time.time()
-        self.fps = 1.0 / max(1e-5, (curr_frame_time - self.prev_frame_time))
-        self.prev_frame_time = curr_frame_time
+        self.fps = 1.0 / max(1e-5, (now - self.prev_frame_time))
+        self.prev_frame_time = now
 
         metrics = {
             "emotion": blend_data["emotion"],
@@ -291,6 +319,9 @@ def main():
             person_tracking_enabled=app_config.person_tracking.enabled,
             person_tracking_confidence=app_config.person_tracking.confidence,
             person_tracking_interval=app_config.person_tracking.frame_interval,
+            pose_fps=app_config.pipeline_rates.pose_fps,
+            face_fps=app_config.pipeline_rates.face_fps,
+            gesture_fps=app_config.pipeline_rates.gesture_fps,
         )
         for cam in app_config.cameras
     ]
