@@ -214,6 +214,10 @@ window.onload = function () {
       renderEventsTable();
       renderContactsTable();
       renderWhatsAppConfig();
+      // Historico persistido (data/events.jsonl, ver EventLogger): sem isso
+      // o feed de alertas comecava vazio a cada abertura da GUI, mesmo com
+      // eventos ja registrados em disco de uma execucao anterior.
+      (state.event_history || []).forEach(prependAlert);
     });
 
     bridge.frameReady.connect(function (sourceName, jpegBase64) {

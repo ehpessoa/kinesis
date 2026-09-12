@@ -17,14 +17,21 @@ from src.behavior.event_engine import EventNotification
 logger = logging.getLogger(__name__)
 
 
-def encode_frame_jpeg_base64(frame) -> str:
-    """Codifica um frame (array BGR do OpenCV) como JPEG em base64."""
+def encode_frame_jpeg_bytes(frame) -> bytes:
+    """Codifica um frame (array BGR do OpenCV) como bytes JPEG crus — usado
+    onde base64 seria um passo desnecessário (ex: servir a imagem via
+    HTTP, ver src/server/remote_server.py)."""
     import cv2
 
     ok, buffer = cv2.imencode(".jpg", frame)
     if not ok:
         raise ValueError("Falha ao codificar o frame em JPEG.")
-    return base64.b64encode(buffer).decode("ascii")
+    return buffer.tobytes()
+
+
+def encode_frame_jpeg_base64(frame) -> str:
+    """Codifica um frame (array BGR do OpenCV) como JPEG em base64."""
+    return base64.b64encode(encode_frame_jpeg_bytes(frame)).decode("ascii")
 
 
 class WhatsAppNotifier:

@@ -132,7 +132,8 @@ Se sua rede também bloquear esses hosts, defina `voice.model_dir` em `config.js
 
 `src/storage/` mitiga dois gaps reais que não estavam no plano original, mas apareceram assim que o sistema saiu da fase de PoC:
 
-* **`event_log.py` (`EventLogger`):** até esta etapa, todo `EventNotification` disparado só aparecia via `print()` no console — sem nenhum registro persistente. Agora cada evento é gravado em `data/events.jsonl` (JSON Lines, somente-anexação), chamado tanto pelo laço de `main.py` quanto por `GuiBridge.tick()`/`test_alert()` na GUI. É a base para uma futura aba de histórico na GUI (hoje o feed de alertas ali é só em memória, perdido ao fechar a janela) e para auditoria manual do que aconteceu enquanto ninguém estava olhando.
+* **`event_log.py` (`EventLogger`):** até esta etapa, todo `EventNotification` disparado só aparecia via `print()` no console — sem nenhum registro persistente. Agora cada evento é gravado em `data/events.jsonl` (JSON Lines, somente-anexação), chamado tanto pelo laço de `main.py` quanto por `GuiBridge.tick()`/`test_alert()` na GUI. É a base da aba de histórico na GUI local (`get_initial_state` agora repopula o feed de alertas com `event_logger.read_recent()` na abertura, em vez de começar vazio) e do servidor remoto (ver seção abaixo) — e serve para auditoria manual do que aconteceu enquanto ninguém estava olhando.
+* **Retenção e expurgo automático:** o log é somente-anexação por natureza (nunca sobrescreve), mas `config.json -> storage.retention_hours` (padrão 24h) define até quando um evento é mantido — `EventLogger.start_auto_purge()` roda em thread própria (intervalo `storage.purge_interval_minutes`, padrão 60min) e reescreve `data/events.jsonl` descartando o que expirou. Sem isso, uma instalação de longa duração acumularia indefinidamente dados sensíveis (frames de câmera anexados a alertas, rótulos de pessoa) em disco.
 * **`notification_queue.py` (`PendingNotificationQueue`):** o retry com backoff exponencial do `WhatsAppNotifier` roda inteiramente em memória, numa thread. Se o processo caísse no meio de um backoff — ou mesmo depois de esgotar as tentativas — a notificação se perdia sem nenhum registro, e ninguém saberia que um alerta de queda não chegou ao cuidador. Agora `NotificationDispatcher.dispatch()` grava a notificação em `data/pending_notifications.json` **antes** de tentar o envio, e só a remove após confirmação de entrega (HTTP 2xx). No `main()`/`gui_main()`, `dispatcher.redeliver_pending()` roda no startup e tenta reenviar qualquer notificação que tenha ficado pendente de uma execução anterior.
 * Ambos os arquivos ficam em `data/` (não versionado, adicionado ao `.gitignore` nesta etapa) e usam o mesmo padrão de override por variável de ambiente das demais configs (`KINESIS_EVENT_LOG`, `KINESIS_PENDING_QUEUE`).
 
@@ -213,6 +214,32 @@ pytest
 
 ---
 
+## ✅ Check-in Programado ("Sistema OK")
+
+Mitiga o gap de **continuidade do próprio monitoramento**: até esta etapa, o sistema só se comunicava quando algo dava errado (um evento da matriz). Se o processo travasse, a câmera perdesse sinal ou a energia caísse, ninguém era avisado — silêncio e "está tudo bem" eram indistinguíveis. `src/monitoring/checkin.py` (`CheckinScheduler`) fecha parte dessa lacuna: nos horários configurados em `config.json -> checkins.times` (padrão `08:00`, `14:00`, `20:00`), dispara uma notificação confirmando que o sistema está ativo — para os contatos de `checkins.notify_contact_ids`. Um check-in que deveria ter chegado e não chegou vira, por si só, um sinal para investigar.
+
+* Reaproveita a mesma infraestrutura dos eventos de visão/voz: o check-in é um `EventNotification` (`event_id="CHECKIN"`, severidade `INFO`) despachado via `NotificationDispatcher.dispatch_to_contact()` — herda a fila durável de retry do WhatsApp e aparece no histórico de eventos (GUI local e servidor remoto) como qualquer outro evento.
+* **A própria mensagem enviada reforça o limite da mitigação:** "Lembrete: isto é um apoio, não substitui visitas e ligações regulares." — o check-in não deve ser apresentado a ninguém como suficiente sozinho.
+* **O que isto NÃO resolve:** se o processo do Kinesis cair ou a máquina perder energia, o check-in também para de ser enviado — a mesma limitação de qualquer notificação que depende do próprio processo estar de pé. Fechar esse caso de verdade exige um heartbeat vindo de **um segundo dispositivo**, com bateria e rede próprias (ex: um módulo celular independente), fora do escopo desta etapa — ver Roteiro.
+* Desabilitado por padrão (`checkins.enabled = false`); os horários são validados no schema (`HH:MM`, 00–23 / 00–59).
+
+---
+
+## 📡 Servidor Remoto (acesso via VPN)
+
+Mitiga o gap "o único jeito de ver o sistema é abrir o desktop PyQt6 na máquina instalada": um familiar/cuidador que não está fisicamente na casa só recebia texto de WhatsApp, sem histórico, tendência ou status ao vivo. `src/server/remote_server.py` (`RemoteStatusServer`) sobe um servidor HTTP **somente-leitura**, usando só a biblioteca padrão (`http.server` — nenhuma dependência nova), com:
+
+* `GET /` — um dashboard HTML/CSS/JS autocontido (sem CDN externo) que pede o token uma vez (salvo em `localStorage`) e atualiza status/snapshot/histórico a cada poucos segundos.
+* `GET /api/status` — conectividade e FPS de cada câmera, se o WhatsApp está configurado e se a voz está ativa (mesmo formato usado pela GUI local, via `src/monitoring/status.py`, extraído do `GuiBridge` para ser reaproveitado aqui sem depender do PyQt6).
+* `GET /api/history?limit=N` — os últimos N eventos de `data/events.jsonl` (mesma fonte que alimenta o histórico da GUI local).
+* `GET /api/snapshot/<camera>` — o último frame JPEG capturado daquela câmera (atualizado a `remote_server.snapshot_fps`, padrão 0,5 Hz — throttle próprio por câmera, reaproveitando `RateLimiter`).
+
+**Modelo de acesso — leia antes de habilitar:** este servidor **não foi projetado para a internet pública**. O único controle de acesso é um token estático (`config.json -> remote_server.token`, obrigatório quando `enabled=true` — o schema recusa configurar um sem o outro). Isso é adequado para uma rede já autenticada por **VPN** — o mesmo túnel Tailscale já usado neste projeto para a câmera 5G remota (ver seção de hardware) — nunca para expor a porta diretamente na internet via port-forward do roteador. Configure `remote_server.host` para a interface atribuída pela VPN (ou deixe em `127.0.0.1` enquanto o acesso remoto ainda não é necessário) e distribua o token apenas aos familiares que devem ter acesso.
+
+Desabilitado por padrão (`remote_server.enabled = false`).
+
+---
+
 ## ▶️ Como Executar
 
 ```bash
@@ -245,8 +272,9 @@ Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar 
 * **`BehaviorTracker`/`EventEngine` por pessoa** (não só por câmera): hoje, com múltiplas pessoas em cena, o rastreamento (ByteTrack) sabe distinguir cada uma, mas a análise de pose/rosto/gestos ainda segue só a pessoa "principal" escolhida.
 * **Validação de `PersonTracker`/ByteTrack com pessoas reais em câmera** — só foi possível validar a lógica de escolha do track principal com resultados YOLO mockados; o comportamento com movimento/oclusão reais ainda não foi observado.
 * **Recalibrar os limiares de detecção de queda caso `pipeline_rates.pose_fps` seja reduzido** — o histórico de quadris/punhos é contado em amostras, não segundos (ver seção de otimização de frame rate acima).
-* **Rotação/retenção de `data/events.jsonl`** — o `EventLogger` é somente-anexação, sem limite de tamanho; para uma instalação de longa duração, girar ou compactar o arquivo periodicamente é responsabilidade externa (ex: logrotate).
 * **CI (GitHub Actions ou similar) rodando `pytest` a cada push** — a suíte existe e passa localmente, mas nada a executa automaticamente ainda.
+* **Heartbeat externo, independente de energia/rede da residência** — o Check-in Programado (ver seção acima) e o Servidor Remoto fecham parte do gap de continuidade do monitoramento, mas ambos ainda dependem do próprio processo/máquina do Kinesis estar de pé. Fechar isso de verdade exige um segundo dispositivo (ex: módulo celular com bateria própria) checando o Kinesis de fora — fora do escopo desta etapa.
+* **Escalonamento multicanal de alertas** — hoje todo alerta (evento ou check-in) converge para o WhatsApp; sem um fallback por SMS/ligação nem uma escada de escalonamento ("se o primeiro contato não confirmar em N minutos, notifica o próximo"), um problema no gateway configurado significa nenhum alerta chegar a ninguém.
 
 ---
 

@@ -1,7 +1,7 @@
 """Schemas Pydantic de configuração (config.json) e agenda de contatos (contacts.json)."""
 from typing import Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CameraSourceConfig(BaseModel):
@@ -127,6 +127,82 @@ class VoiceConfig(BaseModel):
     chunk_seconds: float = 4.0
 
 
+class CheckinConfig(BaseModel):
+    """Check-in programado ("sistema OK") — mitigação do gap de continuidade
+    do próprio monitoramento identificado no roteiro de evolução: em vez de
+    só alertar quando algo dá errado, o sistema confirma proativamente que
+    está ativo nos horários configurados. Silêncio inesperado (o check-in
+    que deveria ter chegado e não chegou) vira, por si só, um sinal para
+    quem cuida notar.
+
+    Isto NÃO substitui uma rotina humana de verificação (visita/ligação) —
+    a própria mensagem enviada reforça esse lembrete — e NÃO cobre o caso
+    do processo/máquina cair: se o Kinesis parar de rodar, o check-in
+    também para de ser enviado (mesma limitação de qualquer notificação
+    que depende do próprio processo estar de pé). Um heartbeat
+    verdadeiramente independente de falha exige um segundo dispositivo com
+    bateria/rede próprios — fora do escopo desta etapa (ver README)."""
+
+    enabled: bool = False
+    times: List[str] = Field(default_factory=lambda: ["08:00", "14:00", "20:00"])
+    notify_contact_ids: List[str] = Field(default_factory=list)
+
+    @field_validator("times")
+    @classmethod
+    def _validate_times(cls, value: List[str]) -> List[str]:
+        for item in value:
+            parts = item.split(":")
+            if len(parts) != 2 or not all(p.isdigit() for p in parts):
+                raise ValueError(f"Horario de check-in invalido: '{item}' (use o formato HH:MM).")
+            hour, minute = int(parts[0]), int(parts[1])
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError(f"Horario de check-in invalido: '{item}' (use o formato HH:MM).")
+        return value
+
+
+class RemoteServerConfig(BaseModel):
+    """Servidor HTTP local somente-leitura (`src/server/remote_server.py`)
+    para um familiar/cuidador remoto acompanhar status, histórico e um
+    snapshot da câmera pelo celular — sem precisar abrir o desktop PyQt6 na
+    máquina instalada. Mitiga o gap "único jeito de ver o sistema é a
+    máquina instalada" do roteiro de evolução.
+
+    NÃO é um servidor pensado para a internet pública: o único controle de
+    acesso é um token estático (`token`), adequado para uma rede já
+    autenticada por VPN (ex: Tailscale — o mesmo túnel já usado para a
+    câmera remota, ver README), não para exposição direta na internet.
+    `host` deve apontar para a interface da VPN (ou ficar em 127.0.0.1 se
+    o acesso remoto ainda não for necessário); nunca faça port-forward
+    desta porta no roteador."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8765
+    token: Optional[str] = None
+    snapshot_fps: float = 0.5
+
+    @model_validator(mode="after")
+    def _require_token_when_enabled(self):
+        if self.enabled and not self.token:
+            raise ValueError(
+                "remote_server.token e obrigatorio quando remote_server.enabled=true "
+                "(e o unico controle de acesso ao servidor - nunca habilite sem um token)."
+            )
+        return self
+
+
+class StorageConfig(BaseModel):
+    """Retenção e expurgo automático do histórico de eventos persistido em
+    `data/events.jsonl` (ver `src/storage/event_log.py`). Sem isso, o log
+    cresce indefinidamente numa instalação de longa duração, acumulando
+    dados sensíveis (frames de câmera anexados a alertas, rótulos de
+    pessoa) sem prazo — `retention_hours` é também o parâmetro citado no
+    roteiro de evolução como mitigação de privacidade/LGPD."""
+
+    retention_hours: float = 24.0
+    purge_interval_minutes: float = 60.0
+
+
 class AppConfig(BaseModel):
     cameras: List[CameraSourceConfig] = Field(
         default_factory=lambda: [CameraSourceConfig(name="Webcam Local", index=0)]
@@ -137,6 +213,9 @@ class AppConfig(BaseModel):
     person_tracking: PersonTrackingConfig = Field(default_factory=PersonTrackingConfig)
     pipeline_rates: PipelineRateConfig = Field(default_factory=PipelineRateConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    checkins: CheckinConfig = Field(default_factory=CheckinConfig)
+    remote_server: RemoteServerConfig = Field(default_factory=RemoteServerConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
 
     @model_validator(mode="after")
     def _ensure_at_least_one_camera(self):

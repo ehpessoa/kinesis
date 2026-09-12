@@ -19,7 +19,8 @@ from config.loader import save_app_config, save_contacts
 from config.schemas import AppConfig, Contact, ContactsFile, EventRuleConfig
 from src.audio.voice_controller import VOICE_EVENT_CATALOG
 from src.behavior.event_engine import EVENT_CATALOG, EventNotification
-from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64
+from src.monitoring.status import build_status
+from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64, encode_frame_jpeg_bytes
 
 # Eventos EVT-05/10/11/12 nao rodam no EventEngine (ver README: exigem zonas
 # espaciais configuraveis, analise em frequencia e classificador de olhar
@@ -49,7 +50,8 @@ class GuiBridge(QObject):
     metricsUpdated = pyqtSignal(str)    # JSON {source_name, fps}
 
     def __init__(self, pipelines: list, app_config: AppConfig, contacts: ContactsFile,
-                 notifier: WhatsAppNotifier, dispatcher, event_logger=None, voice_controllers=None):
+                 notifier: WhatsAppNotifier, dispatcher, event_logger=None, voice_controllers=None,
+                 checkin_scheduler=None, remote_server=None):
         super().__init__()
         self.pipelines = pipelines
         self.app_config = app_config
@@ -58,6 +60,8 @@ class GuiBridge(QObject):
         self.dispatcher = dispatcher
         self.event_logger = event_logger
         self.voice_controllers = voice_controllers or []
+        self.checkin_scheduler = checkin_scheduler
+        self.remote_server = remote_server
         self.selected_index = 0
         self._last_status_emit = 0.0
 
@@ -74,6 +78,12 @@ class GuiBridge(QObject):
                 self.frameReady.emit(pipeline.name, encode_frame_jpeg_base64(frame))
                 self.metricsUpdated.emit(json.dumps({"source_name": pipeline.name, "fps": round(pipeline.fps, 1)}))
 
+            # Snapshot para o servidor remoto (todas as cameras, nao so a
+            # selecionada na GUI local) - throttlado internamente pelo
+            # RemoteStatusServer, um RateLimiter por camera.
+            if self.remote_server is not None and self.remote_server.should_capture_snapshot(pipeline.name, now=now):
+                self.remote_server.set_snapshot(pipeline.name, encode_frame_jpeg_bytes(frame))
+
             events = metrics["events"]
             if events:
                 event_frame_b64 = encode_frame_jpeg_base64(frame)
@@ -88,17 +98,19 @@ class GuiBridge(QObject):
             self.statusChanged.emit(json.dumps(self._build_status()))
 
     def _build_status(self) -> dict:
-        return {
-            "cameras": [{"name": p.name, "connected": bool(p.cam.grabbed)} for p in self.pipelines],
-            "whatsapp_configured": bool(self.app_config.whatsapp.endpoint),
-            "voice_available": bool(self.voice_controllers),
-        }
+        return build_status(self.pipelines, self.app_config, self.voice_controllers)
 
     def shutdown(self):
         for pipeline in self.pipelines:
             pipeline.close()
         for controller in self.voice_controllers:
             controller.stop()
+        if self.checkin_scheduler is not None:
+            self.checkin_scheduler.stop()
+        if self.remote_server is not None:
+            self.remote_server.stop()
+        if self.event_logger is not None:
+            self.event_logger.stop_auto_purge()
         self.notifier.close()
 
     # --- slots invocaveis pelo JS ---
@@ -120,6 +132,8 @@ class GuiBridge(QObject):
                 "notify_contact_ids": [], "implemented": False,
             }
 
+        event_history = self.event_logger.read_recent(limit=50) if self.event_logger is not None else []
+
         return json.dumps({
             "cameras": [{"index": i, "name": p.name} for i, p in enumerate(self.pipelines)],
             "selected_index": self.selected_index,
@@ -127,6 +141,7 @@ class GuiBridge(QObject):
             "contacts": [c.model_dump() for c in self.contacts.contacts],
             "whatsapp": self.app_config.whatsapp.model_dump(),
             "status": self._build_status(),
+            "event_history": event_history,
         })
 
     @pyqtSlot(int)

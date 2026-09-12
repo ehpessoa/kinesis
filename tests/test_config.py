@@ -3,7 +3,14 @@ import json
 import pytest
 
 from config.loader import load_app_config, load_contacts, save_app_config, save_contacts
-from config.schemas import AppConfig, CameraSourceConfig, ContactsFile, Contact
+from config.schemas import (
+    AppConfig,
+    CameraSourceConfig,
+    CheckinConfig,
+    Contact,
+    ContactsFile,
+    RemoteServerConfig,
+)
 
 
 def test_camera_source_resolve_src_index():
@@ -84,6 +91,44 @@ def test_save_and_load_app_config_roundtrip(tmp_path, monkeypatch):
     reloaded = load_app_config()
     assert reloaded.cameras[0].name == "Cam Teste"
     assert reloaded.cameras[0].index == 1
+
+
+def test_checkin_config_defaults():
+    config = AppConfig()
+    assert config.checkins.enabled is False
+    assert config.checkins.times == ["08:00", "14:00", "20:00"]
+    assert config.checkins.notify_contact_ids == []
+
+
+def test_checkin_config_rejects_invalid_hour():
+    with pytest.raises(ValueError, match="Horario de check-in invalido"):
+        CheckinConfig(times=["25:00"])
+
+
+def test_checkin_config_rejects_malformed_time():
+    with pytest.raises(ValueError, match="Horario de check-in invalido"):
+        CheckinConfig(times=["horario_invalido"])
+
+
+def test_remote_server_config_requires_token_when_enabled():
+    with pytest.raises(ValueError, match="token"):
+        RemoteServerConfig(enabled=True, token=None)
+
+
+def test_remote_server_config_allows_disabled_without_token():
+    config = RemoteServerConfig(enabled=False)
+    assert config.token is None
+
+
+def test_remote_server_config_accepts_token_when_enabled():
+    config = RemoteServerConfig(enabled=True, token="segredo-longo")
+    assert config.token == "segredo-longo"
+
+
+def test_storage_config_defaults():
+    config = AppConfig()
+    assert config.storage.retention_hours == 24.0
+    assert config.storage.purge_interval_minutes == 60.0
 
 
 def test_save_and_load_contacts_roundtrip(tmp_path, monkeypatch):

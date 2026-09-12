@@ -14,7 +14,10 @@ from config.loader import load_app_config, load_contacts
 from main import CameraPipeline, NotificationDispatcher, create_voice_controllers
 from src.gui.bridge import GuiBridge
 from src.gui.main_window import MainWindow
+from src.monitoring.checkin import CheckinScheduler
+from src.monitoring.status import build_status
 from src.notifications.whatsapp_client import WhatsAppNotifier
+from src.server.remote_server import RemoteStatusServer
 from src.storage.event_log import EventLogger
 from src.vision.detectors import ensure_models_downloaded
 
@@ -50,11 +53,33 @@ def main():
     ]
 
     event_logger = EventLogger()
+    if app_config.storage.retention_hours > 0:
+        event_logger.start_auto_purge(
+            retention_hours=app_config.storage.retention_hours,
+            check_interval_seconds=app_config.storage.purge_interval_minutes * 60.0,
+        )
+
+    checkin_scheduler = CheckinScheduler(app_config, contacts, dispatcher, event_logger=event_logger)
+    checkin_scheduler.start()
+
     voice_controllers = create_voice_controllers(app_config, contacts, dispatcher, event_logger)
+
+    remote_server = None
+    if app_config.remote_server.enabled:
+        remote_server = RemoteStatusServer(
+            host=app_config.remote_server.host,
+            port=app_config.remote_server.port,
+            token=app_config.remote_server.token,
+            status_provider=lambda: build_status(pipelines, app_config, voice_controllers),
+            history_provider=lambda limit: event_logger.read_recent(limit=limit),
+            snapshot_fps=app_config.remote_server.snapshot_fps,
+        )
+        remote_server.start()
 
     qt_app = QApplication(sys.argv)
     bridge = GuiBridge(pipelines, app_config, contacts, notifier, dispatcher,
-                        event_logger=event_logger, voice_controllers=voice_controllers)
+                        event_logger=event_logger, voice_controllers=voice_controllers,
+                        checkin_scheduler=checkin_scheduler, remote_server=remote_server)
     window = MainWindow(bridge)
     window.show()
     sys.exit(qt_app.exec())

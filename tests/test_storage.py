@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -36,6 +36,80 @@ def test_event_logger_writes_and_reads_jsonl(tmp_path):
 def test_event_logger_read_all_without_file_returns_empty(tmp_path):
     logger = EventLogger(path=str(tmp_path / "nao_existe.jsonl"))
     assert logger.read_all() == []
+
+
+def test_read_recent_limits_to_last_n(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "events.jsonl"))
+    for event_id in ("EVT-01", "EVT-02", "EVT-03", "EVT-04"):
+        logger.log(make_event(event_id=event_id))
+
+    recent = logger.read_recent(limit=2)
+
+    assert [e["event_id"] for e in recent] == ["EVT-03", "EVT-04"]
+
+
+def test_read_recent_without_limit_returns_everything(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "events.jsonl"))
+    logger.log(make_event(event_id="EVT-01"))
+    logger.log(make_event(event_id="EVT-02"))
+
+    assert len(logger.read_recent()) == 2
+
+
+# --- Expurgo/retenção (EventLogger.purge_older_than / start_auto_purge) ---
+
+def test_purge_older_than_removes_only_expired_events(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "events.jsonl"))
+    now = datetime.now(timezone.utc)
+    logger.log(make_event(event_id="EVT-03", timestamp=now - timedelta(hours=30)))
+    logger.log(make_event(event_id="EVT-01", timestamp=now - timedelta(hours=1)))
+
+    removed = logger.purge_older_than(retention_hours=24, now=now)
+
+    assert removed == 1
+    remaining = logger.read_all()
+    assert len(remaining) == 1
+    assert remaining[0]["event_id"] == "EVT-01"
+
+
+def test_purge_older_than_keeps_everything_when_nothing_expired(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "events.jsonl"))
+    now = datetime.now(timezone.utc)
+    logger.log(make_event(timestamp=now))
+
+    removed = logger.purge_older_than(retention_hours=24, now=now)
+
+    assert removed == 0
+    assert len(logger.read_all()) == 1
+
+
+def test_purge_older_than_without_file_is_noop(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "nao_existe.jsonl"))
+    assert logger.purge_older_than(retention_hours=24) == 0
+
+
+def test_start_auto_purge_runs_periodically_in_background(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "events.jsonl"))
+    now = datetime.now(timezone.utc)
+    logger.log(make_event(timestamp=now - timedelta(hours=48)))
+
+    logger.start_auto_purge(retention_hours=24, check_interval_seconds=0.05)
+    try:
+        deadline = time.time() + 2.0
+        while time.time() < deadline and logger.read_all():
+            time.sleep(0.05)
+        assert logger.read_all() == []
+    finally:
+        logger.stop_auto_purge()
+
+
+def test_start_auto_purge_is_idempotent(tmp_path):
+    logger = EventLogger(path=str(tmp_path / "events.jsonl"))
+    logger.start_auto_purge(retention_hours=24, check_interval_seconds=10.0)
+    first_thread = logger._purge_thread
+    logger.start_auto_purge(retention_hours=24, check_interval_seconds=10.0)
+    assert logger._purge_thread is first_thread
+    logger.stop_auto_purge()
 
 
 # --- PendingNotificationQueue ---

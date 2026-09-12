@@ -29,7 +29,10 @@ from config.schemas import AppConfig, ContactsFile
 from src.behavior.event_engine import EventEngine, EventNotification
 from src.behavior.tracker import BehaviorTracker
 from src.capture.threaded_camera import ThreadedCamera
-from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64
+from src.monitoring.checkin import CheckinScheduler
+from src.monitoring.status import build_status
+from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64, encode_frame_jpeg_bytes
+from src.server.remote_server import RemoteStatusServer
 from src.vision.detectors import (
     FACE_CONNECTIONS,
     FACE_MODEL_PATH,
@@ -367,7 +370,16 @@ def main():
     notifier = WhatsAppNotifier(app_config.whatsapp)
     dispatcher = NotificationDispatcher(app_config, contacts, notifier)
     dispatcher.redeliver_pending()
+
     event_logger = EventLogger()
+    if app_config.storage.retention_hours > 0:
+        event_logger.start_auto_purge(
+            retention_hours=app_config.storage.retention_hours,
+            check_interval_seconds=app_config.storage.purge_interval_minutes * 60.0,
+        )
+
+    checkin_scheduler = CheckinScheduler(app_config, contacts, dispatcher, event_logger=event_logger)
+    checkin_scheduler.start()
 
     object_detector = None
     if app_config.object_detection.enabled:
@@ -392,6 +404,18 @@ def main():
 
     voice_controllers = create_voice_controllers(app_config, contacts, dispatcher, event_logger)
 
+    remote_server = None
+    if app_config.remote_server.enabled:
+        remote_server = RemoteStatusServer(
+            host=app_config.remote_server.host,
+            port=app_config.remote_server.port,
+            token=app_config.remote_server.token,
+            status_provider=lambda: build_status(pipelines, app_config, voice_controllers),
+            history_provider=lambda limit: event_logger.read_recent(limit=limit),
+            snapshot_fps=app_config.remote_server.snapshot_fps,
+        )
+        remote_server.start()
+
     print(f"SMA-TR iniciado com {len(pipelines)} camera(s). Pressione 'q' em qualquer janela para sair.")
 
     try:
@@ -402,6 +426,10 @@ def main():
                     continue
                 frame, metrics = result
                 pipeline.render(frame, metrics)
+
+                now = time.time()
+                if remote_server is not None and remote_server.should_capture_snapshot(pipeline.name, now=now):
+                    remote_server.set_snapshot(pipeline.name, encode_frame_jpeg_bytes(frame))
 
                 for event in metrics["events"]:
                     print(f"[{event.severity}] {event.event_id} ({pipeline.name}): {event.message}")
@@ -416,6 +444,10 @@ def main():
             pipeline.close()
         for controller in voice_controllers:
             controller.stop()
+        checkin_scheduler.stop()
+        event_logger.stop_auto_purge()
+        if remote_server is not None:
+            remote_server.stop()
         notifier.close()
         cv2.destroyAllWindows()
 

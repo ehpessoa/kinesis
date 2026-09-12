@@ -46,5 +46,21 @@
     "model_size": "small",
     "model_dir": null,
     "chunk_seconds": 4.0
+  },
+  "checkins": {
+    "enabled": true,
+    "times": ["08:00", "14:00", "20:00"],
+    "notify_contact_ids": ["filho_carlos"]
+  },
+  "remote_server": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "token": "TROQUE_POR_UM_TOKEN_LONGO_E_UNICO",
+    "snapshot_fps": 0.5
+  },
+  "storage": {
+    "retention_hours": 24,
+    "purge_interval_minutes": 60
   }
 }
