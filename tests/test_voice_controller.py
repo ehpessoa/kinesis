@@ -33,8 +33,8 @@ def wired_controller(tmp_path):
         return httpx.Response(200)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example/send", max_retries=1)
-    notifier = WhatsAppNotifier(whatsapp_config, client=client)
+    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example", instance="senszia", max_retries=1)
+    notifier = WhatsAppNotifier(whatsapp_config, client=client, api_key="TESTKEY")
 
     app_config = AppConfig(
         cameras=[CameraSourceConfig(name="Sala", index=0)],
@@ -84,7 +84,7 @@ def test_help_broadcasts_to_all_configured_contacts(wired_controller):
     _run_and_wait(controller, intent, sent)
 
     assert len(sent) == 2
-    assert all(p["event_type"] == "VOZ-SOCORRO" for p in sent)
+    assert all("Pedido de Ajuda" in p["text"] for p in sent)
 
 
 def test_call_me_broadcasts_to_configured_contact(wired_controller):
@@ -94,8 +94,8 @@ def test_call_me_broadcasts_to_configured_contact(wired_controller):
     _run_and_wait(controller, intent, sent)
 
     assert len(sent) == 1
-    assert sent[0]["event_type"] == "VOZ-CHAME-ME"
-    assert sent[0]["recipient_number"] == "5511999998888"
+    assert "Pedido para Ligar" in sent[0]["text"]
+    assert sent[0]["number"] == "5511999998888"
 
 
 def test_send_message_without_name_uses_generic_broadcast(wired_controller):
@@ -105,7 +105,7 @@ def test_send_message_without_name_uses_generic_broadcast(wired_controller):
     _run_and_wait(controller, intent, sent)
 
     assert len(sent) == 1
-    assert sent[0]["recipient_number"] == "5511977776666"  # cuidadora_ana, via notify_contact_ids
+    assert sent[0]["number"] == "5511977776666"  # cuidadora_ana, via notify_contact_ids
 
 
 def test_call_contact_routes_directly_bypassing_notify_contact_ids(wired_controller):
@@ -118,7 +118,7 @@ def test_call_contact_routes_directly_bypassing_notify_contact_ids(wired_control
     _run_and_wait(controller, intent, sent)
 
     assert len(sent) == 1
-    assert sent[0]["recipient_number"] == "5511999998888"
+    assert sent[0]["number"] == "5511999998888"
 
 
 def test_send_message_with_resolved_name_routes_directly(wired_controller):
@@ -128,7 +128,7 @@ def test_send_message_with_resolved_name_routes_directly(wired_controller):
     _run_and_wait(controller, intent, sent)
 
     assert len(sent) == 1
-    assert sent[0]["recipient_number"] == "5511977776666"
+    assert sent[0]["number"] == "5511977776666"
 
 
 def test_call_contact_with_unresolved_name_sends_nothing(wired_controller):
@@ -191,4 +191,4 @@ def test_voice_loop_dispatches_only_on_matching_chunk(wired_controller):
     # + cuidadora_ana) - o que importa aqui e que so o chunk com "socorro"
     # disparou algo, os outros dois (sem palavra-chave) nao geraram envio.
     assert len(sent) == 2
-    assert all(p["event_type"] == "VOZ-SOCORRO" for p in sent)
+    assert all("Pedido de Ajuda" in p["text"] for p in sent)

@@ -5,3 +5,4 @@ config/config.json
 config/contacts.json
 data/
 .pytest_cache/
+.env

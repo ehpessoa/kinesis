@@ -56,9 +56,13 @@ class EventRuleConfig(BaseModel):
 
 
 class WhatsAppConfig(BaseModel):
-    device_id: str = "SMA-RES-DEFAULT"
-    endpoint: Optional[str] = None
-    token: Optional[str] = None
+    """Configuração do gateway WhatsApp (Evolution API). A apikey NUNCA fica
+    aqui (nem em config.json) — vem exclusivamente da variável de ambiente
+    EVOLUTION_API_KEY (ver .env.example e src/notifications/whatsapp_client.py),
+    para não expor o segredo num arquivo que a GUI le/escreve em texto puro."""
+
+    endpoint: Optional[str] = None  # Base URL da Evolution API, ex: https://message.senszia.com
+    instance: Optional[str] = None  # Nome da instancia Evolution, ex: senszia
     max_retries: int = 4
     backoff_base_seconds: float = 2.0
 

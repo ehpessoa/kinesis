@@ -43,11 +43,32 @@ def _slugify(name: str) -> str:
     return slug or "contato"
 
 
+def _annotated_frame(frame, metrics):
+    """Copia o frame com as caixas delimitadoras (objeto/pessoa) queimadas
+    nos pixels - usada só para os destinos que recebem apenas a imagem final
+    (snapshot do servidor remoto, foto anexada ao alerta do WhatsApp). O
+    <canvas> da GUI local recebe o frame limpo e desenha as caixas como
+    camada HTML/SVG a partir de metrics["detections"]/["people"] (ver
+    app.js), então não precisa desta cópia."""
+    if not metrics.get("detections") and not metrics.get("people"):
+        return frame
+    annotated = frame.copy()
+    if metrics.get("detections"):
+        from src.vision.object_detector import draw_object_detections
+        draw_object_detections(annotated, metrics["detections"])
+    if metrics.get("people"):
+        from src.vision.person_tracker import draw_person_tracks
+        primary_id = next((p["track_id"] for p in metrics["people"] if p["is_primary"]), None)
+        draw_person_tracks(annotated, metrics["people"], primary_track_id=primary_id)
+    return annotated
+
+
 class GuiBridge(QObject):
     frameReady = pyqtSignal(str, str)   # (source_name, jpeg_base64)
     eventLogged = pyqtSignal(str)       # JSON de EventNotification
     statusChanged = pyqtSignal(str)     # JSON {cameras, whatsapp_configured, voice_available}
-    metricsUpdated = pyqtSignal(str)    # JSON {source_name, fps}
+    metricsUpdated = pyqtSignal(str)    # JSON {source_name, fps, ...leituras da fonte selecionada}
+    requestQuit = pyqtSignal()          # botao "Sair" da GUI: pede o fechamento da janela
 
     def __init__(self, pipelines: list, app_config: AppConfig, contacts: ContactsFile,
                  notifier: WhatsAppNotifier, dispatcher, event_logger=None, voice_controllers=None,
@@ -76,17 +97,42 @@ class GuiBridge(QObject):
 
             if i == self.selected_index:
                 self.frameReady.emit(pipeline.name, encode_frame_jpeg_base64(frame))
-                self.metricsUpdated.emit(json.dumps({"source_name": pipeline.name, "fps": round(pipeline.fps, 1)}))
+                # Leituras dos detectores para a fonte exibida no momento —
+                # o mesmo que CameraPipeline.render() desenha nas janelas
+                # cv2.imshow do main.py (CLI), aqui enviado como JSON para a
+                # GUI compor o HUD em HTML sobre o <canvas> (ver app.js).
+                self.metricsUpdated.emit(json.dumps({
+                    "source_name": pipeline.name,
+                    "fps": round(pipeline.fps, 1),
+                    "person_label": pipeline.tracker.registered_id,
+                    "person_count": metrics.get("person_count", 0),
+                    "emotion": metrics.get("emotion"),
+                    "head_pose": metrics.get("head_pose"),
+                    "posture": metrics.get("posture"),
+                    "motion": metrics.get("motion"),
+                    "arm_raised": metrics.get("arm_raised", False),
+                    "hand_near_face": metrics.get("hand_near_face", False),
+                    "gestures": metrics.get("gestures", {}),
+                    "mobility_aids": metrics.get("mobility_aids", []),
+                    "fall_alert": metrics.get("fall_alert", False),
+                    "drowsy_alert": metrics.get("drowsy_alert", False),
+                    "frame_size": metrics.get("frame_size"),
+                    "detections": metrics.get("detections", []),
+                    "people": metrics.get("people", []),
+                }))
 
             # Snapshot para o servidor remoto (todas as cameras, nao so a
             # selecionada na GUI local) - throttlado internamente pelo
-            # RemoteStatusServer, um RateLimiter por camera.
+            # RemoteStatusServer, um RateLimiter por camera. Usa uma copia com
+            # as caixas queimadas nos pixels (process_next_frame nao desenha
+            # mais isso - ver comentario la) porque o dashboard remoto so
+            # recebe a imagem final, sem os dados crus para desenhar camadas.
             if self.remote_server is not None and self.remote_server.should_capture_snapshot(pipeline.name, now=now):
-                self.remote_server.set_snapshot(pipeline.name, encode_frame_jpeg_bytes(frame))
+                self.remote_server.set_snapshot(pipeline.name, encode_frame_jpeg_bytes(_annotated_frame(frame, metrics)))
 
             events = metrics["events"]
             if events:
-                event_frame_b64 = encode_frame_jpeg_base64(frame)
+                event_frame_b64 = encode_frame_jpeg_base64(_annotated_frame(frame, metrics))
                 for event in events:
                     self.eventLogged.emit(event.model_dump_json())
                     if self.event_logger is not None:
@@ -199,13 +245,16 @@ class GuiBridge(QObject):
     def save_whatsapp_config(self, whatsapp_json: str) -> str:
         try:
             data = json.loads(whatsapp_json)
-            self.app_config.whatsapp.device_id = data.get("device_id", self.app_config.whatsapp.device_id)
             self.app_config.whatsapp.endpoint = data.get("endpoint") or None
-            self.app_config.whatsapp.token = data.get("token") or None
+            self.app_config.whatsapp.instance = data.get("instance") or None
             save_app_config(self.app_config)
             return json.dumps({"ok": True})
         except Exception as exc:
             return json.dumps({"ok": False, "error": str(exc)})
+
+    @pyqtSlot()
+    def quit_app(self):
+        self.requestQuit.emit()
 
     @pyqtSlot(str)
     def test_alert(self, event_id: str):

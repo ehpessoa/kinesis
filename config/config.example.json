@@ -21,9 +21,8 @@
     "VOZ-CHAMAR-CONTATO": { "enabled": true, "notify_contact_ids": [] }
   },
   "whatsapp": {
-    "device_id": "SMA-RES-01042",
-    "endpoint": "https://zap.mydomain.com/send",
-    "token": "SEU_TOKEN_AQUI",
+    "endpoint": "https://message.senszia.com",
+    "instance": "senszia",
     "max_retries": 4,
     "backoff_base_seconds": 2.0
   },

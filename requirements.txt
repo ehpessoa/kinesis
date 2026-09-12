@@ -4,6 +4,7 @@ mediapipe==1.0.1
 numpy==2.4.6
 pydantic==2.13.5
 httpx==0.28.1
+python-dotenv==1.0.1
 
 # Detecção de dispositivos de mobilidade (object_detection) e rastreamento
 # de pessoa (person_tracking, habilitado por padrão) — ver README.

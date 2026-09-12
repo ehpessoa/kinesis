@@ -199,8 +199,8 @@ def test_redeliver_pending_resends_and_clears_queue(tmp_path):
         return httpx.Response(200)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example/send", max_retries=1)
-    notifier = WhatsAppNotifier(whatsapp_config, client=client)
+    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example", instance="senszia", max_retries=1)
+    notifier = WhatsAppNotifier(whatsapp_config, client=client, api_key="TESTKEY")
 
     app_config = AppConfig(
         cameras=[CameraSourceConfig(name="Teste", index=0)],
@@ -221,7 +221,7 @@ def test_redeliver_pending_resends_and_clears_queue(tmp_path):
     time.sleep(0.3)  # o reenvio roda em thread separada
 
     assert len(sent_payloads) == 1
-    assert sent_payloads[0]["event_type"] == "EVT-01"
+    assert "Queda Brusca Detectada" in sent_payloads[0]["text"]
     assert dispatcher.queue.list_pending() == {}
 
 
@@ -236,8 +236,8 @@ def test_dispatch_persists_before_send_and_clears_after_success(tmp_path):
         return httpx.Response(200)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example/send", max_retries=1)
-    notifier = WhatsAppNotifier(whatsapp_config, client=client)
+    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example", instance="senszia", max_retries=1)
+    notifier = WhatsAppNotifier(whatsapp_config, client=client, api_key="TESTKEY")
 
     app_config = AppConfig(
         cameras=[CameraSourceConfig(name="Teste", index=0)],
@@ -286,8 +286,8 @@ def _make_dispatcher(tmp_path, events=None):
     client = httpx.Client(transport=httpx.MockTransport(
         lambda r: (sent.append(json.loads(r.read())), httpx.Response(200))[1]
     ))
-    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example/send", max_retries=1)
-    notifier = WhatsAppNotifier(whatsapp_config, client=client)
+    whatsapp_config = WhatsAppConfig(endpoint="https://zap.example", instance="senszia", max_retries=1)
+    notifier = WhatsAppNotifier(whatsapp_config, client=client, api_key="TESTKEY")
     app_config = AppConfig(
         cameras=[CameraSourceConfig(name="Teste", index=0)],
         whatsapp=whatsapp_config, events=events or {},
@@ -307,7 +307,7 @@ def test_dispatch_to_contact_sends_to_named_contact_directly(tmp_path):
     assert ok is True
     time.sleep(0.3)
     assert len(sent) == 1
-    assert sent[0]["recipient_number"] == "5511999998888"
+    assert sent[0]["number"] == "5511999998888"
 
 
 def test_dispatch_to_contact_returns_false_for_unknown_contact(tmp_path):

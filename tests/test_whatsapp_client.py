@@ -22,18 +22,18 @@ def test_send_event_succeeds_after_retries():
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["count"] += 1
+        assert request.url.path == "/message/sendText/senszia"
         payload = json.loads(request.read())
-        assert payload["event_type"] == "EVT-01"
-        assert payload["device_id"] == "SMA-TESTE"
-        assert request.headers.get("Authorization") == "Bearer TOKEN123"
+        assert payload["number"] == "5511999998888"
+        assert request.headers.get("apikey") == "APIKEY123"
         if calls["count"] < 3:
             return httpx.Response(500)
         return httpx.Response(200, json={"ok": True})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    config = WhatsAppConfig(device_id="SMA-TESTE", endpoint="https://zap.example/send", token="TOKEN123",
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance="senszia",
                              max_retries=4, backoff_base_seconds=0.01)
-    notifier = WhatsAppNotifier(config, client=client)
+    notifier = WhatsAppNotifier(config, client=client, api_key="APIKEY123")
 
     ok = notifier.send_event(make_event(), recipient_number="5511999998888")
 
@@ -49,8 +49,9 @@ def test_send_event_fails_after_exhausting_retries():
         return httpx.Response(500)
 
     client = httpx.Client(transport=httpx.MockTransport(always_fail))
-    config = WhatsAppConfig(endpoint="https://zap.example/send", max_retries=3, backoff_base_seconds=0.01)
-    notifier = WhatsAppNotifier(config, client=client)
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance="senszia",
+                             max_retries=3, backoff_base_seconds=0.01)
+    notifier = WhatsAppNotifier(config, client=client, api_key="APIKEY123")
 
     ok = notifier.send_event(make_event(), recipient_number="5511999998888")
 
@@ -59,8 +60,26 @@ def test_send_event_fails_after_exhausting_retries():
 
 
 def test_send_event_without_endpoint_returns_false_without_network_call():
-    config = WhatsAppConfig(endpoint=None)
-    notifier = WhatsAppNotifier(config, client=httpx.Client())
+    config = WhatsAppConfig(endpoint=None, instance="senszia")
+    notifier = WhatsAppNotifier(config, client=httpx.Client(), api_key="APIKEY123")
+
+    ok = notifier.send_event(make_event(), recipient_number="5511999998888")
+
+    assert ok is False
+
+
+def test_send_event_without_instance_returns_false_without_network_call():
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance=None)
+    notifier = WhatsAppNotifier(config, client=httpx.Client(), api_key="APIKEY123")
+
+    ok = notifier.send_event(make_event(), recipient_number="5511999998888")
+
+    assert ok is False
+
+
+def test_send_event_without_api_key_returns_false_without_network_call():
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance="senszia")
+    notifier = WhatsAppNotifier(config, client=httpx.Client(), api_key=None)
 
     ok = notifier.send_event(make_event(), recipient_number="5511999998888")
 
@@ -75,15 +94,15 @@ def test_payload_includes_person_label_when_present():
         return httpx.Response(200)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    config = WhatsAppConfig(endpoint="https://zap.example/send")
-    notifier = WhatsAppNotifier(config, client=client)
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance="senszia")
+    notifier = WhatsAppNotifier(config, client=client, api_key="APIKEY123")
 
     notifier.send_event(make_event(person_label="Pessoa 42"), recipient_number="5511999998888")
 
-    assert "(Pessoa 42)" in captured["payload"]["message"]
+    assert "(Pessoa 42)" in captured["payload"]["text"]
 
 
-def test_payload_includes_media_attachment_when_frame_provided():
+def test_recipient_number_is_normalized():
     captured = {}
 
     def handler(request):
@@ -91,9 +110,9 @@ def test_payload_includes_media_attachment_when_frame_provided():
         return httpx.Response(200)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    config = WhatsAppConfig(endpoint="https://zap.example/send")
-    notifier = WhatsAppNotifier(config, client=client)
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance="senszia")
+    notifier = WhatsAppNotifier(config, client=client, api_key="APIKEY123")
 
-    notifier.send_event(make_event(), recipient_number="5511999998888", frame_jpeg_base64="ZmFrZQ==")
+    notifier.send_event(make_event(), recipient_number="+55 (11) 99999-8888")
 
-    assert captured["payload"]["media_attachment"] == {"type": "image/jpeg", "base64_data": "ZmFrZQ=="}
+    assert captured["payload"]["number"] == "5511999998888"

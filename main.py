@@ -279,23 +279,21 @@ class CameraPipeline:
         head_pose = self._last_head_pose
         gestures = self._last_gestures
 
+        # Caixas delimitadoras (objeto/pessoa) NAO sao mais desenhadas nos
+        # pixels do frame aqui - ficam disponiveis cruas em metrics["detections"]
+        # /["people"] para quem consumir process_next_frame() decidir como
+        # exibir (o CLI as queima na imagem em render(), a GUI as desenha como
+        # camada HTML/SVG sobre o <canvas> - ver bridge.py e app.js).
         if self.object_detector is not None:
             self._object_frame_counter += 1
             if self._object_frame_counter % self.object_detect_interval == 0:
                 self._last_mobility_detections = self.object_detector.detect(frame)
-            if self._last_mobility_detections:
-                from src.vision.object_detector import draw_object_detections
-                draw_object_detections(frame, self._last_mobility_detections)
 
         if self.person_tracker is not None:
             self._person_frame_counter += 1
             if self._person_frame_counter % self.person_tracking_interval == 0:
                 self._last_people = self.person_tracker.track(frame)
                 self._last_primary = self.person_tracker.pick_primary(self._last_people)
-            if self._last_people:
-                from src.vision.person_tracker import draw_person_tracks
-                primary_id = self._last_primary["track_id"] if self._last_primary else None
-                draw_person_tracks(frame, self._last_people, primary_track_id=primary_id)
 
             self.tracker.registered_id = (
                 f"Pessoa {self._last_primary['track_id']}" if self._last_primary else "Sem pessoa detectada"
@@ -317,6 +315,7 @@ class CameraPipeline:
         self.fps = 1.0 / max(1e-5, (now - self.prev_frame_time))
         self.prev_frame_time = now
 
+        primary_track_id = self._last_primary["track_id"] if self._last_primary else None
         metrics = {
             "emotion": blend_data["emotion"],
             "head_pose": head_pose,
@@ -330,6 +329,18 @@ class CameraPipeline:
             "events": events,
             "mobility_aids": sorted({d["label"] for d in self._last_mobility_detections}),
             "person_count": len(self._last_people),
+            "frame_size": [w, h],
+            "detections": [
+                {"label": d["label"], "confidence": d["confidence"], "bbox": list(d["bbox"])}
+                for d in self._last_mobility_detections
+            ],
+            "people": [
+                {
+                    "track_id": p["track_id"], "confidence": p["confidence"], "bbox": list(p["bbox"]),
+                    "is_primary": p["track_id"] == primary_track_id,
+                }
+                for p in self._last_people
+            ],
         }
         return frame, metrics
 
@@ -337,6 +348,14 @@ class CameraPipeline:
         h, w, _ = frame.shape
         gestures_text = ", ".join(f"{side}: {label}" for side, label in metrics["gestures"].items()) or "Nenhum"
         mobility_text = ", ".join(metrics["mobility_aids"]) or "Nenhum"
+
+        if metrics["detections"]:
+            from src.vision.object_detector import draw_object_detections
+            draw_object_detections(frame, self._last_mobility_detections)
+        if metrics["people"]:
+            from src.vision.person_tracker import draw_person_tracks
+            primary_id = next((p["track_id"] for p in metrics["people"] if p["is_primary"]), None)
+            draw_person_tracks(frame, self._last_people, primary_track_id=primary_id)
 
         overlay = frame.copy()
         cv2.rectangle(overlay, (10, 10), (420, 350), (20, 20, 20), -1)

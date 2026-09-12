@@ -78,24 +78,22 @@ Cada evento habilitado em `config.json → events` dispara uma notificação (`W
 
 ---
 
-## 📲 Integração WhatsApp
+## 📲 Integração WhatsApp (Evolution API)
 
-`src/notifications/whatsapp_client.py` envia `POST` HTTPS para o `endpoint` configurado em `config.json → whatsapp`, com `Authorization: Bearer <token>`, fila de retry com **backoff exponencial** (`max_retries` / `backoff_base_seconds`) e o payload:
+`src/notifications/whatsapp_client.py` envia `POST https://<endpoint>/message/sendText/<instance>`, com header `apikey: <EVOLUTION_API_KEY>`, fila de retry com **backoff exponencial** (`max_retries` / `backoff_base_seconds`) e o payload:
 
 ```json
 {
-  "device_id": "SMA-RES-01042",
-  "recipient_number": "5511999998888",
-  "event_type": "EVT-01",
-  "severity": "CRITICAL",
-  "timestamp": "2026-09-12T20:40:00Z",
-  "message": "[ALERTA SMA-TR] Queda Brusca Detectada: Queda brusca detectada.",
-  "media_attachment": { "type": "image/jpeg", "base64_data": "..." },
-  "voice_command_metadata": { "initiated_by_user": false, "transcribed_text": null }
+  "number": "5511999998888",
+  "text": "[ALERTA SMA-TR] Queda Brusca Detectada: Queda brusca detectada."
 }
 ```
 
-O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders em `config.example.json` a serem substituídos pelo gateway WhatsApp real do usuário.
+`endpoint` (base URL) e `instance` vêm de `config.json → whatsapp` (editáveis pela aba "Configuração" da GUI) — não são segredo. A **apikey nunca fica em config.json nem passa pela GUI**: vem exclusivamente da variável de ambiente `EVOLUTION_API_KEY`, lida de um arquivo `.env` na raiz do projeto (`python-dotenv`, carregado automaticamente por `whatsapp_client.py`) — copie `.env.example` para `.env` e preencha com a chave real da sua instância. `.env` está no `.gitignore`; nunca commite a chave.
+
+`number` é sempre normalizado (removendo `+`, espaços, parênteses e traços) antes do envio, então `contacts.json` pode ter o número em qualquer formatação comum, desde que contenha DDI+DDD+número.
+
+O endpoint `sendText` **não suporta mídia** — o snapshot da câmera anexado ao alerta não é enviado por enquanto (a Evolution API tem um endpoint separado, `/message/sendMedia/{instance}`, listado como extensão futura).
 
 ---
 
@@ -213,7 +211,7 @@ pytest
   * `statusChanged(json)` — conectividade de câmeras/WhatsApp/voz, a cada 1s.
   * `metricsUpdated(json)` — FPS da câmera selecionada.
   * Slots invocáveis do JS: `get_initial_state`, `select_camera`, `set_event_enabled`, `set_event_contacts`, `add_contact`, `delete_contact`, `save_whatsapp_config`, `test_alert` — todos persistindo em `config.json`/`contacts.json` via `config/loader.py` quando aplicável.
-* **`src/gui/web/`:** `index.html` + `styles.css` (Tailwind via CDN, dark mode) + `app.js`, com 4 abas: Dashboard (vídeo ao vivo + status + log de alertas), Matriz de Eventos (toggle/severidade/destinatários por evento, incluindo um botão "Testar"), Contatos (tabela + modal de cadastro) e Configuração (endpoint/token do WhatsApp).
+* **`src/gui/web/`:** `index.html` + `styles.css` (Tailwind via CDN, dark mode) + `app.js`, com 4 abas: Dashboard (vídeo ao vivo + status + log de alertas), Matriz de Eventos (toggle/severidade/destinatários por evento, incluindo um botão "Testar"), Contatos (tabela + modal de cadastro) e Configuração (endpoint/instância da Evolution API — a apikey vem de `.env`, não desta aba).
 
 > ⚠️ A aba Matriz de Eventos lista os 12 eventos da especificação, mas EVT-05/10/11/12 aparecem esmaecidos e desabilitados — a GUI não escapa a lacuna documentada na seção anterior, apenas a exibe.
 
@@ -281,7 +279,7 @@ O caso mais simples: tudo roda numa única máquina que já tem tela, teclado e 
 
 1. Edite `config/contacts.json` com os contatos reais (nome, `whatsapp_number`).
 2. Edite `config/config.json`:
-   * `whatsapp.endpoint` / `whatsapp.token`: dados do seu gateway WhatsApp (ver seção "Integração WhatsApp").
+   * `whatsapp.endpoint` / `whatsapp.instance`: dados da sua instância Evolution API (ver seção "Integração WhatsApp"). Copie `.env.example` para `.env` e defina `EVOLUTION_API_KEY` — a apikey nunca vai em `config.json`.
    * `events`: habilite/ajuste os destinatários por evento (ou faça isso depois, pela GUI).
    * Deixe `remote_server.enabled: false` — não faz sentido aqui, você já está na máquina.
 3. Instale o `ffmpeg` se for usar o módulo de voz (`voice.enabled: true`): `sudo apt install -y ffmpeg` (Linux) ou `brew install ffmpeg` (macOS).

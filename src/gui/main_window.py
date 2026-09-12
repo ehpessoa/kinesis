@@ -34,6 +34,8 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.bridge.tick)
         self.timer.start(TICK_INTERVAL_MS)
 
+        self.bridge.requestQuit.connect(self.close)
+
     def closeEvent(self, event):
         self.timer.stop()
         self.bridge.shutdown()
