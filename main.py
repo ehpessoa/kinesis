@@ -41,16 +41,30 @@ from src.vision.detectors import (
     ensure_models_downloaded,
 )
 from src.vision.rate_limiter import RateLimiter
+from src.storage.event_log import EventLogger
+from src.storage.notification_queue import PendingNotificationQueue
 
 
 class NotificationDispatcher:
     """Encaminha EventNotification para os contatos configurados via WhatsApp,
-    respeitando a matriz de eventos (habilitado/desabilitado, destinatários)."""
+    respeitando a matriz de eventos (habilitado/desabilitado, destinatários).
 
-    def __init__(self, config: AppConfig, contacts: ContactsFile, notifier: WhatsAppNotifier):
+    Cada notificação é persistida em `PendingNotificationQueue` ANTES da
+    tentativa de envio (que roda em thread separada, com retry/backoff em
+    memória — ver WhatsAppNotifier) e só é removida da fila após confirmação
+    de entrega. Isso garante que uma queda do processo a qualquer momento
+    (durante o backoff, ou após esgotar as tentativas) não perca o registro
+    da notificação — ela fica pronta para reenvio via `redeliver_pending()`
+    na próxima inicialização."""
+
+    def __init__(
+        self, config: AppConfig, contacts: ContactsFile, notifier: WhatsAppNotifier,
+        queue: Optional[PendingNotificationQueue] = None,
+    ):
         self.config = config
         self.contacts = contacts
         self.notifier = notifier
+        self.queue = queue or PendingNotificationQueue()
 
     def dispatch(self, event: EventNotification, frame_b64: Optional[str]):
         rule = self.config.events.get(event.event_id)
@@ -63,9 +77,33 @@ class NotificationDispatcher:
             contact = self.contacts.find(contact_id)
             if contact is None or not contact.whatsapp_number:
                 continue
+            record_id = self.queue.enqueue(event.model_dump(mode="json"), contact.whatsapp_number, frame_b64)
             threading.Thread(
-                target=self.notifier.send_event,
-                args=(event, contact.whatsapp_number, frame_b64),
+                target=self._send_and_finalize,
+                args=(record_id, event, contact.whatsapp_number, frame_b64),
+                daemon=True,
+            ).start()
+
+    def _send_and_finalize(self, record_id: str, event: EventNotification, recipient_number: str, frame_b64: Optional[str]):
+        if self.notifier.send_event(event, recipient_number, frame_b64):
+            self.queue.mark_delivered(record_id)
+        # Falha apos esgotar as tentativas: o registro permanece na fila,
+        # tratado como pendente (nao ha alerta adicional aqui de proposito -
+        # WhatsAppNotifier.send_event ja loga o erro; ver redeliver_pending).
+
+    def redeliver_pending(self):
+        """Reenvia notificacoes que ficaram pendentes de uma execucao
+        anterior (processo encerrado/crashado antes da confirmacao de
+        entrega). Chamado no startup, antes do laco principal."""
+        pending = self.queue.list_pending()
+        if not pending:
+            return
+        print(f"Reenviando {len(pending)} notificacao(oes) WhatsApp pendente(s) de uma execucao anterior...")
+        for record_id, record in pending.items():
+            event = EventNotification.model_validate(record["event"])
+            threading.Thread(
+                target=self._send_and_finalize,
+                args=(record_id, event, record["recipient_number"], record.get("frame_b64")),
                 daemon=True,
             ).start()
 
@@ -304,6 +342,8 @@ def main():
     contacts = load_contacts()
     notifier = WhatsAppNotifier(app_config.whatsapp)
     dispatcher = NotificationDispatcher(app_config, contacts, notifier)
+    dispatcher.redeliver_pending()
+    event_logger = EventLogger()
 
     object_detector = None
     if app_config.object_detection.enabled:
@@ -339,6 +379,7 @@ def main():
 
                 for event in metrics["events"]:
                     print(f"[{event.severity}] {event.event_id} ({pipeline.name}): {event.message}")
+                    event_logger.log(event)
                     frame_b64 = encode_frame_jpeg_base64(frame)
                     dispatcher.dispatch(event, frame_b64)
 

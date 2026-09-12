@@ -3,3 +3,5 @@ __pycache__/
 models/
 config/config.json
 config/contacts.json
+data/
+.pytest_cache/

@@ -44,13 +44,14 @@ class GuiBridge(QObject):
     metricsUpdated = pyqtSignal(str)    # JSON {source_name, fps}
 
     def __init__(self, pipelines: list, app_config: AppConfig, contacts: ContactsFile,
-                 notifier: WhatsAppNotifier, dispatcher):
+                 notifier: WhatsAppNotifier, dispatcher, event_logger=None):
         super().__init__()
         self.pipelines = pipelines
         self.app_config = app_config
         self.contacts = contacts
         self.notifier = notifier
         self.dispatcher = dispatcher
+        self.event_logger = event_logger
         self.selected_index = 0
         self._last_status_emit = 0.0
 
@@ -72,6 +73,8 @@ class GuiBridge(QObject):
                 event_frame_b64 = encode_frame_jpeg_base64(frame)
                 for event in events:
                     self.eventLogged.emit(event.model_dump_json())
+                    if self.event_logger is not None:
+                        self.event_logger.log(event)
                     self.dispatcher.dispatch(event, event_frame_b64)
 
         if now - self._last_status_emit > 1.0:
@@ -193,4 +196,6 @@ class GuiBridge(QObject):
             source_name=source_name, message="Alerta de teste disparado manualmente pela GUI.",
         )
         self.eventLogged.emit(event.model_dump_json())
+        if self.event_logger is not None:
+            self.event_logger.log(event)
         self.dispatcher.dispatch(event, frame_b64=None)

@@ -90,7 +90,11 @@ class EventEngine:
         self._fall_episode_started_at: Optional[float] = None
         self._fall_episode_broken = False
 
-        self._last_activity_at = time.time()
+        # Inicializado no primeiro update(), com o `now` recebido - nao aqui
+        # com time.time() real, para que o motor funcione corretamente
+        # tambem quando alimentado com timestamps simulados (testes,
+        # eventual replay de video gravado).
+        self._last_activity_at: Optional[float] = None
         self._inactivity_notified = False
 
         self._prev_drowsy_alert = False
@@ -145,6 +149,8 @@ class EventEngine:
 
         # EVT-03: inatividade geral. Qualquer movimento ou mudanca de postura
         # conta como atividade e reinicia a janela.
+        if self._last_activity_at is None:
+            self._last_activity_at = now
         is_active = dynamic_state != "Estatico" or (self._prev_posture is not None and posture != self._prev_posture)
         if is_active:
             self._last_activity_at = now

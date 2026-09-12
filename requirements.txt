@@ -1,0 +1,17 @@
+# Núcleo (visão computacional, config, HTTP) — sempre necessário.
+opencv-python-headless==5.0.0.93
+mediapipe==1.0.1
+numpy==2.4.6
+pydantic==2.13.5
+httpx==0.28.1
+
+# Detecção de dispositivos de mobilidade (object_detection) e rastreamento
+# de pessoa (person_tracking, habilitado por padrão) — ver README.
+# Traz torch/torchvision como dependência transitiva (~1a execução baixa
+# ~600MB de pesos se object_detection.enabled=true).
+ultralytics==8.4.149
+
+# GUI Desktop Híbrida (gui_main.py). Só necessário se você for usar a GUI
+# em vez de main.py (janelas cv2.imshow).
+PyQt6==6.11.0
+PyQt6-WebEngine==6.11.0

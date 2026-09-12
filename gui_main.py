@@ -15,6 +15,7 @@ from main import CameraPipeline, NotificationDispatcher
 from src.gui.bridge import GuiBridge
 from src.gui.main_window import MainWindow
 from src.notifications.whatsapp_client import WhatsAppNotifier
+from src.storage.event_log import EventLogger
 from src.vision.detectors import ensure_models_downloaded
 
 
@@ -25,6 +26,7 @@ def main():
     contacts = load_contacts()
     notifier = WhatsAppNotifier(app_config.whatsapp)
     dispatcher = NotificationDispatcher(app_config, contacts, notifier)
+    dispatcher.redeliver_pending()
 
     object_detector = None
     if app_config.object_detection.enabled:
@@ -47,8 +49,10 @@ def main():
         for cam in app_config.cameras
     ]
 
+    event_logger = EventLogger()
+
     qt_app = QApplication(sys.argv)
-    bridge = GuiBridge(pipelines, app_config, contacts, notifier, dispatcher)
+    bridge = GuiBridge(pipelines, app_config, contacts, notifier, dispatcher, event_logger=event_logger)
     window = MainWindow(bridge)
     window.show()
     sys.exit(qt_app.exec())

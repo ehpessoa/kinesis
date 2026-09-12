@@ -12,9 +12,11 @@ src/capture/       -> ThreadedCamera: captura em thread própria, com reconexão
 src/vision/        -> detectores MediaPipe + MobilityAidDetector (YOLO-World) + PersonTracker (ByteTrack) + RateLimiter
 src/behavior/      -> BehaviorTracker (cinemática/expressões) + EventEngine (matriz de eventos)
 src/notifications/ -> WhatsAppNotifier (HTTPS + retry com backoff exponencial)
+src/storage/       -> EventLogger (JSONL) + PendingNotificationQueue (fila durável de WhatsApp)
 src/gui/           -> GuiBridge (QWebChannel) + MainWindow (PyQt6) + web/ (HTML/CSS/JS)
 main.py            -> orquestra N CameraPipeline (1 por câmera) via janelas cv2.imshow
 gui_main.py        -> mesma orquestração, apresentada como dashboard PyQt6/HTML
+tests/             -> suíte pytest (config, EventEngine, WhatsApp, storage, pipeline)
 ```
 
 Para cada fonte de câmera configurada, o `main.py` cria um `CameraPipeline` **independente**, com:
@@ -91,6 +93,29 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ---
 
+## 🗄️ Persistência de Eventos e Fila Durável de Notificações
+
+`src/storage/` mitiga dois gaps reais que não estavam no plano original, mas apareceram assim que o sistema saiu da fase de PoC:
+
+* **`event_log.py` (`EventLogger`):** até esta etapa, todo `EventNotification` disparado só aparecia via `print()` no console — sem nenhum registro persistente. Agora cada evento é gravado em `data/events.jsonl` (JSON Lines, somente-anexação), chamado tanto pelo laço de `main.py` quanto por `GuiBridge.tick()`/`test_alert()` na GUI. É a base para uma futura aba de histórico na GUI (hoje o feed de alertas ali é só em memória, perdido ao fechar a janela) e para auditoria manual do que aconteceu enquanto ninguém estava olhando.
+* **`notification_queue.py` (`PendingNotificationQueue`):** o retry com backoff exponencial do `WhatsAppNotifier` roda inteiramente em memória, numa thread. Se o processo caísse no meio de um backoff — ou mesmo depois de esgotar as tentativas — a notificação se perdia sem nenhum registro, e ninguém saberia que um alerta de queda não chegou ao cuidador. Agora `NotificationDispatcher.dispatch()` grava a notificação em `data/pending_notifications.json` **antes** de tentar o envio, e só a remove após confirmação de entrega (HTTP 2xx). No `main()`/`gui_main()`, `dispatcher.redeliver_pending()` roda no startup e tenta reenviar qualquer notificação que tenha ficado pendente de uma execução anterior.
+* Ambos os arquivos ficam em `data/` (não versionado, adicionado ao `.gitignore` nesta etapa) e usam o mesmo padrão de override por variável de ambiente das demais configs (`KINESIS_EVENT_LOG`, `KINESIS_PENDING_QUEUE`).
+
+**Achado real durante os testes desta etapa:** escrever um teste para o EVT-03 (inatividade) expôs um bug de inicialização no `EventEngine` — `_last_activity_at` era inicializado com `time.time()` real no construtor, e não com o `now` recebido em `update()`. Em produção isso não tinha efeito prático (os dois são sempre tempo real), mas quebrava silenciosamente qualquer cenário alimentado por timestamps simulados. Corrigido para inicializar de forma tardia, no primeiro `update()`.
+
+---
+
+## 🧪 Suíte de Testes (`tests/`)
+
+Toda a validação até esta etapa era feita com scripts ad-hoc, descartados ao fim de cada sessão — sem nenhuma proteção contra regressão. `tests/` converte essa validação em uma suíte pytest committada (54 testes): schemas/config (`test_config.py`), matriz de eventos (`test_event_engine.py`), cliente WhatsApp com HTTP mockado (`test_whatsapp_client.py`), `RateLimiter` (`test_rate_limiter.py`), persistência (`test_storage.py`, incluindo o cenário de "processo cai no meio do envio" com `redeliver_pending`), rastreamento de pessoa com YOLO mockado (`test_person_tracker.py`), `CameraPipeline` de ponta a ponta com câmera e detectores reais (`test_camera_pipeline.py`), e detecção de objetos (`test_object_detector.py` — os testes que carregam o modelo real de ~600MB são pulados automaticamente se os pesos ainda não estiverem cacheados em `models/`).
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+---
+
 ## 🧍 Rastreamento Contínuo de Pessoa (ByteTrack)
 
 `src/vision/person_tracker.py` (`PersonTracker`) mitiga o item **4.1.3** do plano original — na seção "Requisitos Não Viáveis ou Tecnicamente Inadequados" — sobre reidentificação facial biométrica constante ser pouco confiável em câmeras distantes ou em ângulos inclinados.
@@ -156,8 +181,8 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 ## ▶️ Como Executar
 
 ```bash
-pip install opencv-python mediapipe numpy pydantic httpx PyQt6 PyQt6-WebEngine
-pip install ultralytics  # rastreamento de pessoa (default on) + deteccao de objetos (opcional)
+pip install -r requirements.txt
+# (dev/testes: pip install -r requirements-dev.txt)
 
 cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp/deteccao/rastreamento
 cp config/contacts.example.json config/contacts.json  # edite os contatos reais
@@ -179,7 +204,8 @@ Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar 
 * **`BehaviorTracker`/`EventEngine` por pessoa** (não só por câmera): hoje, com múltiplas pessoas em cena, o rastreamento (ByteTrack) sabe distinguir cada uma, mas a análise de pose/rosto/gestos ainda segue só a pessoa "principal" escolhida.
 * **Validação de `PersonTracker`/ByteTrack com pessoas reais em câmera** — só foi possível validar a lógica de escolha do track principal com resultados YOLO mockados; o comportamento com movimento/oclusão reais ainda não foi observado.
 * **Recalibrar os limiares de detecção de queda caso `pipeline_rates.pose_fps` seja reduzido** — o histórico de quadris/punhos é contado em amostras, não segundos (ver seção de otimização de frame rate acima).
-* **`requirements.txt`/`pyproject.toml` e suíte de testes automatizada** (a validação atual é ad-hoc, não commitada como testes).
+* **Rotação/retenção de `data/events.jsonl`** — o `EventLogger` é somente-anexação, sem limite de tamanho; para uma instalação de longa duração, girar ou compactar o arquivo periodicamente é responsabilidade externa (ex: logrotate).
+* **CI (GitHub Actions ou similar) rodando `pytest` a cada push** — a suíte existe e passa localmente, mas nada a executa automaticamente ainda.
 
 O módulo de voz em particular exige microfone real para validação de verdade — não foi portado nesta etapa.
 
