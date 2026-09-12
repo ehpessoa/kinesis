@@ -15,14 +15,11 @@ Ultralytics, para calcular os embeddings das classes — uma única vez, no
 carregamento do modelo. A partir daí, a detecção por frame usa somente o
 backbone YOLO (rápido); o MobileCLIP não entra no laço de vídeo.
 """
-import contextlib
-import os
-
 import cv2
 from ultralytics import YOLO
 
-MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "models")
-MODELS_DIR = os.path.normpath(MODELS_DIR)
+from src.vision.weights import download_into_models_dir
+
 YOLO_WORLD_WEIGHTS = "yolov8s-world.pt"
 
 # rótulo em português -> sinônimos em inglês (CLIP/MobileCLIP funcionam
@@ -61,21 +58,6 @@ def _use_mobileclip_text_backend():
     text_model_module._kinesis_patched = True
 
 
-@contextlib.contextmanager
-def _download_into_models_dir():
-    """Os pesos do YOLO-World/MobileCLIP são baixados relativos ao
-    diretório de trabalho atual; entramos temporariamente em models/ (já
-    gitignorada, mesma pasta dos modelos MediaPipe) para não poluir a raiz
-    do repositório."""
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    prev_cwd = os.getcwd()
-    os.chdir(MODELS_DIR)
-    try:
-        yield
-    finally:
-        os.chdir(prev_cwd)
-
-
 class MobilityAidDetector:
     """Detector compartilhável entre todas as fontes de câmera.
 
@@ -92,7 +74,7 @@ class MobilityAidDetector:
         prompts, labels = _flatten_prompts()
         self._class_labels = labels  # índice de classe do modelo -> rótulo em português
 
-        with _download_into_models_dir():
+        with download_into_models_dir():
             self.model = YOLO(YOLO_WORLD_WEIGHTS)
             self.model.set_classes(prompts)
 

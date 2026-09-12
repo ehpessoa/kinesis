@@ -25,5 +25,10 @@
     "enabled": false,
     "confidence": 0.35,
     "frame_interval": 5
+  },
+  "person_tracking": {
+    "enabled": true,
+    "confidence": 0.4,
+    "frame_interval": 1
   }
 }

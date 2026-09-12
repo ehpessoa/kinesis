@@ -73,7 +73,11 @@ class CameraPipeline:
     """Tudo que é específico de UMA fonte de vídeo: captura, detectores
     MediaPipe (com timeline própria), BehaviorTracker e EventEngine."""
 
-    def __init__(self, name: str, src, object_detector=None, object_detect_interval: int = 5):
+    def __init__(
+        self, name: str, src, object_detector=None, object_detect_interval: int = 5,
+        person_tracking_enabled: bool = True, person_tracking_confidence: float = 0.4,
+        person_tracking_interval: int = 1,
+    ):
         self.name = name
         self.cam = ThreadedCamera(src, name=name).start()
         self.tracker = BehaviorTracker()
@@ -91,6 +95,20 @@ class CameraPipeline:
         self.object_detect_interval = max(1, object_detect_interval)
         self._object_frame_counter = 0
         self._last_mobility_detections = []
+
+        # Rastreamento continuo de pessoas (ByteTrack) — mitigacao do item
+        # 4.1.3 do plano. Ao contrario do object_detector acima, o tracker
+        # MANTEM estado entre frames (historico de tracks), entao cada
+        # CameraPipeline precisa da sua PROPRIA instancia, nunca uma
+        # compartilhada — ver src/vision/person_tracker.py.
+        self.person_tracker = None
+        if person_tracking_enabled:
+            from src.vision.person_tracker import PersonTracker
+            self.person_tracker = PersonTracker(confidence=person_tracking_confidence)
+        self.person_tracking_interval = max(1, person_tracking_interval)
+        self._person_frame_counter = 0
+        self._last_people = []
+        self._last_primary = None
 
         self.pose_detector = PoseLandmarker.create_from_options(PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=POSE_MODEL_PATH),
@@ -172,7 +190,24 @@ class CameraPipeline:
                 from src.vision.object_detector import draw_object_detections
                 draw_object_detections(frame, self._last_mobility_detections)
 
-        events = self.event_engine.update(pose_data, blend_data, now=time.time())
+        if self.person_tracker is not None:
+            self._person_frame_counter += 1
+            if self._person_frame_counter % self.person_tracking_interval == 0:
+                self._last_people = self.person_tracker.track(frame)
+                self._last_primary = self.person_tracker.pick_primary(self._last_people)
+            if self._last_people:
+                from src.vision.person_tracker import draw_person_tracks
+                primary_id = self._last_primary["track_id"] if self._last_primary else None
+                draw_person_tracks(frame, self._last_people, primary_track_id=primary_id)
+
+            self.tracker.registered_id = (
+                f"Pessoa {self._last_primary['track_id']}" if self._last_primary else "Sem pessoa detectada"
+            )
+
+        person_label = self.tracker.registered_id if self.person_tracker is not None else None
+        events = self.event_engine.update(
+            pose_data, blend_data, now=time.time(), person_label=person_label,
+        )
 
         curr_frame_time = time.time()
         self.fps = 1.0 / max(1e-5, (curr_frame_time - self.prev_frame_time))
@@ -190,6 +225,7 @@ class CameraPipeline:
             "gestures": gestures,
             "events": events,
             "mobility_aids": sorted({d["label"] for d in self._last_mobility_detections}),
+            "person_count": len(self._last_people),
         }
         return frame, metrics
 
@@ -203,7 +239,10 @@ class CameraPipeline:
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
 
         cv2.putText(frame, f"Fonte: {self.name}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(frame, f"ID: {self.tracker.registered_id}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        id_text = self.tracker.registered_id
+        if metrics["person_count"] > 1:
+            id_text += f" (+{metrics['person_count'] - 1} pessoa(s) no ambiente)"
+        cv2.putText(frame, f"ID: {id_text}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.putText(frame, f"Expressao: {metrics['emotion']}", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         cv2.putText(frame, f"Cabeca: {metrics['head_pose']}", (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
         cv2.putText(frame, f"Postura: {metrics['posture']}", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 255, 100), 2)
@@ -249,6 +288,9 @@ def main():
             name=cam.name, src=cam.resolve_src(),
             object_detector=object_detector,
             object_detect_interval=app_config.object_detection.frame_interval,
+            person_tracking_enabled=app_config.person_tracking.enabled,
+            person_tracking_confidence=app_config.person_tracking.confidence,
+            person_tracking_interval=app_config.person_tracking.frame_interval,
         )
         for cam in app_config.cameras
     ]

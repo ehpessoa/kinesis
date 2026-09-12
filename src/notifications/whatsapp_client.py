@@ -33,13 +33,14 @@ class WhatsAppNotifier:
         self._client = client or httpx.Client(timeout=10.0)
 
     def _build_payload(self, event: EventNotification, recipient_number: str, frame_jpeg_base64: Optional[str]) -> dict:
+        who = f" ({event.person_label})" if event.person_label else ""
         payload = {
             "device_id": self.config.device_id,
             "recipient_number": recipient_number,
             "event_type": event.event_id,
             "severity": event.severity,
             "timestamp": event.timestamp.isoformat(),
-            "message": f"[ALERTA SMA-TR] {event.name}: {event.message}",
+            "message": f"[ALERTA SMA-TR] {event.name}{who}: {event.message}",
             "voice_command_metadata": {"initiated_by_user": False, "transcribed_text": None},
         }
         if frame_jpeg_base64:

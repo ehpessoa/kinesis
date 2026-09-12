@@ -188,7 +188,7 @@ function prependAlert(event) {
       <span class="font-medium">${event.event_id} · ${escapeHtml(event.name)}</span>
       <span class="sev-pill ${severityClass(event.severity)}">${event.severity}</span>
     </div>
-    <div class="text-slate-400 text-xs mt-1">${escapeHtml(event.source_name)} · ${time}</div>
+    <div class="text-slate-400 text-xs mt-1">${escapeHtml(event.source_name)}${event.person_label ? " · " + escapeHtml(event.person_label) : ""} · ${time}</div>
     <div class="text-slate-300 text-xs mt-1">${escapeHtml(event.message)}</div>
   `;
   feed.prepend(card);

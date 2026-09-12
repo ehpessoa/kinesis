@@ -9,7 +9,7 @@ O **Kinesis / SMA-TR** é uma solução de monitoramento comportamental e assist
 ```
 config/            -> config.json / contacts.json (não versionados) + schemas Pydantic
 src/capture/       -> ThreadedCamera: captura em thread própria, com reconexão automática
-src/vision/        -> detectores MediaPipe + MobilityAidDetector (YOLO-World)
+src/vision/        -> detectores MediaPipe + MobilityAidDetector (YOLO-World) + PersonTracker (ByteTrack)
 src/behavior/      -> BehaviorTracker (cinemática/expressões) + EventEngine (matriz de eventos)
 src/notifications/ -> WhatsAppNotifier (HTTPS + retry com backoff exponencial)
 src/gui/           -> GuiBridge (QWebChannel) + MainWindow (PyQt6) + web/ (HTML/CSS/JS)
@@ -91,6 +91,24 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ---
 
+## 🧍 Rastreamento Contínuo de Pessoa (ByteTrack)
+
+`src/vision/person_tracker.py` (`PersonTracker`) mitiga o item **4.1.3** do plano original — na seção "Requisitos Não Viáveis ou Tecnicamente Inadequados" — sobre reidentificação facial biométrica constante ser pouco confiável em câmeras distantes ou em ângulos inclinados.
+
+**A mitigação recomendada não é "melhorar a biometria", é trocar de abordagem:** em vez de tentar reconhecer o rosto da pessoa a cada frame, ela recebe um **ID de rastreamento contínuo** (ByteTrack) no momento em que entra no ambiente, mantido por continuidade de movimento/aparência enquanto permanece visível — sem depender de reconhecimento facial em nenhum momento.
+
+* Usa **YOLOv8n padrão** (classe `person`, presente no COCO-80 — ao contrário de bengala/andador/cadeira de rodas, que exigiram YOLO-World) com o tracker **ByteTrack** embutido no `ultralytics` (`model.track(..., persist=True, tracker="bytetrack.yaml")`).
+* **Habilitado por padrão** (`config.json → person_tracking.enabled = true`): o modelo é leve (~6MB, sem CLIP), e testes neste projeto mediram ~58ms por frame em CPU (640×480) — bem mais barato que a detecção de objetos (~800ms), então roda a todo frame (`frame_interval: 1`) por padrão.
+* Substitui o antigo mock fixo `BehaviorTracker.registered_id = "Usuario_Principal"` pelo ID de rastreamento real da pessoa "principal" em cena (`Pessoa <track_id>`), escolhida por **estabilidade**: mantém a mesma pessoa entre frames mesmo que outra, com caixa maior, apareça — só troca quando o track anterior desaparece do campo de visão.
+* Se mais de uma pessoa é detectada (ex: idoso + cuidador), a contagem aparece no HUD ("+N pessoa(s) no ambiente") — mas **o pipeline de pose/rosto/gestos continua analisando 1 pessoa por câmera** (o "principal" escolhido pelo tracker); não há, ainda, um `BehaviorTracker`/`EventEngine` independente por pessoa dentro da mesma câmera.
+* `EventNotification` ganhou um campo `person_label`, propagado da mensagem de WhatsApp ao card de alerta na GUI — permite distinguir, no histórico, qual pessoa rastreada gerou cada evento.
+
+> ⚠️ **Estado por câmera, nunca compartilhado.** Assim como os detectores MediaPipe (ver acima), o `persist=True` do ByteTrack mantém histórico de tracks associado à instância do modelo — compartilhar uma única instância entre câmeras misturaria tracks de cenas físicas independentes. Cada `CameraPipeline` cria sua própria `PersonTracker`.
+
+**Validação neste ambiente:** sem pessoas reais em câmera, a lógica de escolha do track "principal" (estabilidade, troca ao desaparecer) foi validada com resultados do YOLO simulados (mock), e a integração completa (`CameraPipeline`, `EventEngine.person_label`, HUD, `GuiBridge`) foi exercitada de ponta a ponta com esses mocks. Com o modelo real e frames de ruído sintético (sem pessoas), o comportamento sem falso positivo foi confirmado — ao contrário do YOLO-World de `object_detection` (vocabulário aberto, mais propenso a ruído), o YOLOv8n padrão (classificador fechado) não detectou nada em ruído puro.
+
+---
+
 ## 🦯 Detecção de Dispositivos de Mobilidade (YOLO-World)
 
 `src/vision/object_detector.py` (`MobilityAidDetector`) identifica **bengala, andador e cadeira de rodas** no frame — objetos relevantes para avaliar risco de queda e rotina do idoso.
@@ -128,9 +146,9 @@ O `endpoint`/`token` **não têm valor real de fábrica** — são placeholders 
 
 ```bash
 pip install opencv-python mediapipe numpy pydantic httpx PyQt6 PyQt6-WebEngine
-pip install ultralytics  # opcional: só necessário se object_detection.enabled=true
+pip install ultralytics  # rastreamento de pessoa (default on) + deteccao de objetos (opcional)
 
-cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp/deteccao de objetos
+cp config/config.example.json config/config.json      # edite cameras/eventos/whatsapp/deteccao/rastreamento
 cp config/contacts.example.json config/contacts.json  # edite os contatos reais
 
 python main.py       # janelas cv2.imshow (uma por câmera)
@@ -147,7 +165,9 @@ Em `main.py`, pressione `q` ou `Esc` em qualquer janela de vídeo para encerrar 
 * **Módulo de voz offline** (Silero VAD + faster-whisper + Piper TTS + NLU) para comandos de mensagem por voz.
 * **Zonas espaciais configuráveis** no frame (cama, escada, fogão) — destrava EVT-10 e EVT-12 (a detecção de objetos que EVT-12 também precisa já existe, ver seção acima).
 * **Calibração de `object_detection.confidence`** contra fotos/filmagem reais de bengala, andador e cadeira de rodas — não pôde ser feita neste ambiente.
-* **Otimização de frame-rate por pipeline** (Pose 15-20 FPS / Face 5-10 FPS) para hardware sem GPU — a detecção de objetos já tem seu próprio throttle (`frame_interval`), mas os detectores MediaPipe ainda rodam em todo frame.
+* **`BehaviorTracker`/`EventEngine` por pessoa** (não só por câmera): hoje, com múltiplas pessoas em cena, o rastreamento (ByteTrack) sabe distinguir cada uma, mas a análise de pose/rosto/gestos ainda segue só a pessoa "principal" escolhida.
+* **Validação de `PersonTracker`/ByteTrack com pessoas reais em câmera** — só foi possível validar a lógica de escolha do track principal com resultados YOLO mockados; o comportamento com movimento/oclusão reais ainda não foi observado.
+* **Otimização de frame-rate por pipeline** (Pose 15-20 FPS / Face 5-10 FPS) para hardware sem GPU — a detecção de objetos e o rastreamento de pessoa já têm throttle próprio (`frame_interval`), mas os detectores MediaPipe ainda rodam em todo frame.
 * **`requirements.txt`/`pyproject.toml` e suíte de testes automatizada** (a validação atual é ad-hoc, não commitada como testes).
 
 O módulo de voz em particular exige microfone real para validação de verdade — não foi portado nesta etapa.

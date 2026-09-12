@@ -19,7 +19,11 @@ class BehaviorTracker:
         self.fall_state = False
         self.fall_timestamp = 0
         self.eyes_closed_since = None
-        self.registered_id = "Usuario_Principal"  # Mock de Biometria para o Piloto
+        # Sobrescrito a cada frame pela CameraPipeline com o ID de
+        # rastreamento continuo (ByteTrack) da pessoa principal em cena —
+        # ver src/vision/person_tracker.py. Nao ha reidentificacao facial.
+        # Fica "N/A" se person_tracking estiver desabilitado na config.
+        self.registered_id = "N/A"
 
     def analyze_blendshapes(self, blendshapes) -> dict:
         scores = {c.category_name: c.score for c in blendshapes}

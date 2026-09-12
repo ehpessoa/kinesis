@@ -37,6 +37,9 @@ def main():
             name=cam.name, src=cam.resolve_src(),
             object_detector=object_detector,
             object_detect_interval=app_config.object_detection.frame_interval,
+            person_tracking_enabled=app_config.person_tracking.enabled,
+            person_tracking_confidence=app_config.person_tracking.confidence,
+            person_tracking_interval=app_config.person_tracking.frame_interval,
         )
         for cam in app_config.cameras
     ]

@@ -66,6 +66,22 @@ class ObjectDetectionConfig(BaseModel):
     frame_interval: int = 5  # roda a deteccao a cada N frames (mitiga custo de CPU)
 
 
+class PersonTrackingConfig(BaseModel):
+    """Rastreamento contínuo de pessoas (ByteTrack) — mitigação do item
+    4.1.3 do plano: substitui a reidentificação facial biométrica repetida
+    (pouco confiável em câmeras distantes/ângulos inclinados) por um ID de
+    rastreamento contínuo desde a entrada da pessoa no ambiente.
+
+    Habilitado por padrão: usa YOLOv8n padrão (classe "person" do COCO-80,
+    ~6MB), bem mais leve que o YOLO-World de object_detection. `frame_interval`
+    é 1 (todo frame) por padrão — reduzir prejudica a continuidade que o
+    ByteTrack depende para associar detecções entre frames."""
+
+    enabled: bool = True
+    confidence: float = 0.4
+    frame_interval: int = 1
+
+
 class AppConfig(BaseModel):
     cameras: List[CameraSourceConfig] = Field(
         default_factory=lambda: [CameraSourceConfig(name="Webcam Local", index=0)]
@@ -73,6 +89,7 @@ class AppConfig(BaseModel):
     events: Dict[str, EventRuleConfig] = Field(default_factory=dict)
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     object_detection: ObjectDetectionConfig = Field(default_factory=ObjectDetectionConfig)
+    person_tracking: PersonTrackingConfig = Field(default_factory=PersonTrackingConfig)
 
     @model_validator(mode="after")
     def _ensure_at_least_one_camera(self):

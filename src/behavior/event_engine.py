@@ -47,9 +47,13 @@ class EventNotification(BaseModel):
     source_name: str
     message: str
     frame_base64: Optional[str] = None
+    person_label: Optional[str] = None
 
 
-def _build_event(event_id: str, source_name: str, message: str, severity_override: Optional[str] = None) -> EventNotification:
+def _build_event(
+    event_id: str, source_name: str, message: str,
+    severity_override: Optional[str] = None, person_label: Optional[str] = None,
+) -> EventNotification:
     meta = EVENT_CATALOG[event_id]
     return EventNotification(
         event_id=event_id,
@@ -59,6 +63,7 @@ def _build_event(event_id: str, source_name: str, message: str, severity_overrid
         timestamp=datetime.now(timezone.utc),
         source_name=source_name,
         message=message,
+        person_label=person_label,
     )
 
 
@@ -101,7 +106,10 @@ class EventEngine:
         self._distress_since: Optional[float] = None
         self._distress_notified = False
 
-    def update(self, pose_data: dict, blend_data: dict, now: Optional[float] = None) -> List[EventNotification]:
+    def update(
+        self, pose_data: dict, blend_data: dict, now: Optional[float] = None,
+        person_label: Optional[str] = None,
+    ) -> List[EventNotification]:
         now = now if now is not None else time.time()
         events: List[EventNotification] = []
 
@@ -115,7 +123,7 @@ class EventEngine:
 
         # EVT-01: borda de subida do alerta de queda.
         if fall_alert and not self._prev_fall_alert:
-            events.append(_build_event("EVT-01", self.source_name, "Queda brusca detectada."))
+            events.append(_build_event("EVT-01", self.source_name, "Queda brusca detectada.", person_label=person_label))
             self._fall_episode_started_at = now
             self._fall_episode_broken = False
         self._prev_fall_alert = fall_alert
@@ -131,6 +139,7 @@ class EventEngine:
                     events.append(_build_event(
                         "EVT-02", self.source_name,
                         f"Imobilidade por mais de {int(self.immobility_after_fall_seconds)}s apos queda.",
+                        person_label=person_label,
                     ))
                 self._fall_episode_started_at = None
 
@@ -144,12 +153,16 @@ class EventEngine:
             events.append(_build_event(
                 "EVT-03", self.source_name,
                 f"Sem atividade detectada por mais de {int(self.inactivity_threshold_seconds // 60)} min.",
+                person_label=person_label,
             ))
             self._inactivity_notified = True
 
         # EVT-04: borda de subida do alerta de sonolencia.
         if drowsy_alert and not self._prev_drowsy_alert:
-            events.append(_build_event("EVT-04", self.source_name, "Sinal de sonolencia (olhos fechados prolongado)."))
+            events.append(_build_event(
+                "EVT-04", self.source_name, "Sinal de sonolencia (olhos fechados prolongado).",
+                person_label=person_label,
+            ))
         self._prev_drowsy_alert = drowsy_alert
 
         # EVT-06: braco levantado sustentado (gesto de SOS).
@@ -160,6 +173,7 @@ class EventEngine:
                 events.append(_build_event(
                     "EVT-06", self.source_name,
                     f"Braco levantado por mais de {self.sos_hold_seconds:.0f}s (possivel pedido de ajuda).",
+                    person_label=person_label,
                 ))
                 self._sos_notified = True
         else:
@@ -174,6 +188,7 @@ class EventEngine:
                 events.append(_build_event(
                     "EVT-07", self.source_name,
                     f"Mao proxima ao rosto por mais de {self.hand_face_hold_seconds:.0f}s.",
+                    person_label=person_label,
                 ))
                 self._hand_face_notified = True
         else:
@@ -184,6 +199,7 @@ class EventEngine:
         if self._prev_posture is not None and posture != self._prev_posture and posture != "N/A":
             events.append(_build_event(
                 "EVT-08", self.source_name, f"Mudanca de postura: {self._prev_posture} -> {posture}.",
+                person_label=person_label,
             ))
         if posture != "N/A":
             self._prev_posture = posture
@@ -193,7 +209,10 @@ class EventEngine:
             if self._distress_since is None:
                 self._distress_since = now
             elif not self._distress_notified and (now - self._distress_since) >= self.distress_hold_seconds:
-                events.append(_build_event("EVT-09", self.source_name, "Expressao facial de dor/distress sustentada."))
+                events.append(_build_event(
+                    "EVT-09", self.source_name, "Expressao facial de dor/distress sustentada.",
+                    person_label=person_label,
+                ))
                 self._distress_notified = True
         else:
             self._distress_since = None
