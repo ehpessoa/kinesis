@@ -19,9 +19,25 @@ def _validate_time_of_day(value: str) -> str:
 
 
 class CameraSourceConfig(BaseModel):
-    """Uma fonte de câmera: webcam local (`index`), RTSP customizado (`rtsp_url`)
-    ou RTSP Intelbras montado a partir de `ip`/credenciais. Wi-Fi local e remoto
-    via Tailscale usam exatamente este mesmo schema — só o `ip` muda.
+    """Uma fonte de câmera: webcam local (`index`), RTSP totalmente customizado
+    (`rtsp_url`) ou RTSP montado a partir de `ip`/credenciais + um template de
+    path (`rtsp_path_template`). Wi-Fi local e remoto via Tailscale usam
+    exatamente este mesmo schema — só o `ip` muda.
+
+    A aplicação em si é **agnóstica de fabricante**: nada no código assume uma
+    marca específica de câmera. `rtsp_path_template` é o que determina o
+    protocolo, e tem como default o path usado por câmeras Dahua e OEMs da
+    mesma plataforma (Intelbras é a mais comum no Brasil) — a única marca
+    citada nos exemplos deste projeto por ser a testada, não por exigência de
+    código. Para outro fabricante/protocolo, troque só o template, ex:
+
+        "rtsp_path_template": "/Streaming/Channels/{channel}01"   # Hikvision
+
+    Os placeholders disponíveis são `{channel}` e `{subtype}` (valores dos
+    campos abaixo); a URL final é
+    `rtsp://<user>:<senha>@<ip>:<port><rtsp_path_template>`. Câmeras cujo
+    protocolo não caiba nesse formato (query string totalmente diferente,
+    porta não-RTSP, etc.) devem usar `rtsp_url` com a URL completa.
 
     A senha RTSP é um segredo tão sensível quanto a apikey do WhatsApp, mas
     precisa ser resolvida por câmera (a lista `cameras` pode ter várias). Por
@@ -30,6 +46,8 @@ class CameraSourceConfig(BaseModel):
     uso — `config.json` guarda só o nome da variável, nunca o valor. O campo
     `password` continua aceito por compatibilidade com instalações antigas,
     mas fica em texto puro no arquivo; prefira `password_env` em config novas."""
+
+    DEFAULT_RTSP_PATH_TEMPLATE: ClassVar[str] = "/cam/realmonitor?channel={channel}&subtype={subtype}"
 
     name: str
     index: Optional[int] = None
@@ -40,6 +58,7 @@ class CameraSourceConfig(BaseModel):
     port: int = 554
     channel: int = 1
     subtype: int = 1
+    rtsp_path_template: str = DEFAULT_RTSP_PATH_TEMPLATE
     rtsp_url: Optional[str] = None
 
     def resolve_password(self) -> Optional[str]:
@@ -64,10 +83,15 @@ class CameraSourceConfig(BaseModel):
                     f"Fonte '{self.name}': defina 'password_env' (recomendado) ou 'password' "
                     "quando 'ip' e usado."
                 )
-            return (
-                f"rtsp://{self.user}:{password}@{self.ip}:{self.port}"
-                f"/cam/realmonitor?channel={self.channel}&subtype={self.subtype}"
-            )
+            try:
+                path = self.rtsp_path_template.format(channel=self.channel, subtype=self.subtype)
+            except (KeyError, IndexError) as exc:
+                raise ValueError(
+                    f"Fonte '{self.name}': 'rtsp_path_template' invalido ({exc}); "
+                    "use somente os placeholders {channel} e {subtype}, ou use 'rtsp_url' "
+                    "para uma URL completa customizada."
+                ) from exc
+            return f"rtsp://{self.user}:{password}@{self.ip}:{self.port}{path}"
         raise ValueError(f"Fonte '{self.name}' invalida: informe 'index', 'rtsp_url' ou 'ip'.")
 
 

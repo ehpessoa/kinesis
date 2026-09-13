@@ -29,7 +29,7 @@ def test_camera_source_resolve_src_rtsp_url():
 
 
 def test_camera_source_resolve_src_ip_builds_rtsp_url():
-    cam = CameraSourceConfig(name="Intelbras", ip="192.168.1.108", user="admin", password="SENHA")
+    cam = CameraSourceConfig(name="Camera IP", ip="192.168.1.108", user="admin", password="SENHA")
     assert cam.resolve_src() == "rtsp://admin:SENHA@192.168.1.108:554/cam/realmonitor?channel=1&subtype=1"
 
 
@@ -41,20 +41,20 @@ def test_camera_source_resolve_src_ip_without_password_raises():
 
 def test_camera_source_resolve_src_uses_password_env(monkeypatch):
     monkeypatch.setenv("CAM_TEST_PASSWORD", "SENHA_DO_AMBIENTE")
-    cam = CameraSourceConfig(name="Intelbras", ip="192.168.1.108", password_env="CAM_TEST_PASSWORD")
+    cam = CameraSourceConfig(name="Camera IP", ip="192.168.1.108", password_env="CAM_TEST_PASSWORD")
     assert cam.resolve_src() == "rtsp://admin:SENHA_DO_AMBIENTE@192.168.1.108:554/cam/realmonitor?channel=1&subtype=1"
 
 
 def test_camera_source_resolve_src_password_env_takes_priority_over_password(monkeypatch):
     monkeypatch.setenv("CAM_TEST_PASSWORD", "SENHA_DO_AMBIENTE")
     cam = CameraSourceConfig(
-        name="Intelbras", ip="192.168.1.108", password="SENHA_NO_JSON", password_env="CAM_TEST_PASSWORD",
+        name="Camera IP", ip="192.168.1.108", password="SENHA_NO_JSON", password_env="CAM_TEST_PASSWORD",
     )
     assert "SENHA_DO_AMBIENTE" in cam.resolve_src()
 
 
 def test_camera_source_resolve_src_password_env_missing_raises_with_var_name():
-    cam = CameraSourceConfig(name="Intelbras", ip="192.168.1.108", password_env="CAM_TEST_PASSWORD")
+    cam = CameraSourceConfig(name="Camera IP", ip="192.168.1.108", password_env="CAM_TEST_PASSWORD")
     with pytest.raises(ValueError, match="CAM_TEST_PASSWORD"):
         cam.resolve_src()
 
@@ -62,6 +62,22 @@ def test_camera_source_resolve_src_password_env_missing_raises_with_var_name():
 def test_camera_source_resolve_src_invalid_raises():
     cam = CameraSourceConfig(name="Invalida")
     with pytest.raises(ValueError):
+        cam.resolve_src()
+
+
+def test_camera_source_resolve_src_accepts_custom_rtsp_path_template():
+    cam = CameraSourceConfig(
+        name="Outro fabricante", ip="192.168.1.108", password="SENHA",
+        rtsp_path_template="/Streaming/Channels/{channel}01",
+    )
+    assert cam.resolve_src() == "rtsp://admin:SENHA@192.168.1.108:554/Streaming/Channels/101"
+
+
+def test_camera_source_resolve_src_rejects_invalid_rtsp_path_template_placeholder():
+    cam = CameraSourceConfig(
+        name="Camera IP", ip="192.168.1.108", password="SENHA", rtsp_path_template="/foo/{bogus}",
+    )
+    with pytest.raises(ValueError, match="rtsp_path_template"):
         cam.resolve_src()
 
 

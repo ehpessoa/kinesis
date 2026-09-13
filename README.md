@@ -34,7 +34,7 @@ Os modelos (`.task`) são baixados automaticamente na primeira execução para `
 
 ## 📷 Cenários de Câmera Suportados
 
-Do ponto de vista da aplicação, câmera **Wi-Fi local** e câmera **remota via VPN Tailscale (5G/4G)** são a mesma fonte RTSP genérica — a diferença está inteiramente na camada de rede, não no código.
+Do ponto de vista da aplicação, câmera **Wi-Fi local** e câmera **remota via VPN Tailscale (5G/4G)** são a mesma fonte RTSP genérica — a diferença está inteiramente na camada de rede, não no código. O código também é **agnóstico de fabricante**: nenhuma marca é assumida em lugar nenhum, o que muda o protocolo é só o campo `rtsp_path_template` descrito abaixo.
 
 ```bash
 cp config/config.example.json config/config.json
@@ -43,8 +43,8 @@ cp config/contacts.example.json config/contacts.json
 
 Edite `config/config.json` → `cameras`:
 * `index`: webcam local.
-* `ip` + `user`/`password_env` (+ `port`, `channel`, `subtype`): monta a URL RTSP padrão Intelbras/Dahua. `password_env` é o **nome** de uma variável de ambiente definida no `.env` (ex: `CAM_WIFI_LOCAL_PASSWORD=...`, ver `.env.example`) — a senha em si nunca vai em `config.json`. O campo `password` (valor em texto puro) ainda é aceito por compatibilidade, mas evite-o em configurações novas.
-* `rtsp_url`: URL RTSP completa customizada.
+* `ip` + `user`/`password_env` (+ `port`, `channel`, `subtype`, `rtsp_path_template`): monta a URL RTSP como `rtsp://<user>:<senha>@<ip>:<port><rtsp_path_template>`. O default de `rtsp_path_template` (`/cam/realmonitor?channel={channel}&subtype={subtype}`) é o path usado por câmeras **Dahua e OEMs da mesma plataforma — Intelbras é a mais comum no Brasil**, e por isso a única marca citada nos exemplos deste projeto, não por exigência de código. Para outro fabricante, basta trocar o template, ex: `"rtsp_path_template": "/Streaming/Channels/{channel}01"` para Hikvision. `password_env` é o **nome** de uma variável de ambiente definida no `.env` (ex: `CAM_WIFI_LOCAL_PASSWORD=...`, ver `.env.example`) — a senha em si nunca vai em `config.json`. O campo `password` (valor em texto puro) ainda é aceito por compatibilidade, mas evite-o em configurações novas.
+* `rtsp_url`: URL RTSP completa customizada — use quando o protocolo da câmera não couber no formato `<host>+template` acima (query string totalmente diferente, porta não-RTSP, etc.).
 
 Nenhum dos dois arquivos é versionado (estão no `.gitignore`) para não expor credenciais/token no repositório. Caminhos alternativos podem ser indicados via `KINESIS_CONFIG` / `KINESIS_CONTACTS`. Sem `config.json`, o sistema usa a webcam local (índice 0) por padrão.
 
@@ -322,7 +322,7 @@ Descubra o IP local da câmera (painel do roteador → dispositivos conectados, 
 
 ```json
 "cameras": [
-  { "name": "Sala - Intelbras", "ip": "192.168.1.108", "user": "admin", "password_env": "CAM_SALA_PASSWORD" }
+  { "name": "Sala - Camera IP", "ip": "192.168.1.108", "user": "admin", "password_env": "CAM_SALA_PASSWORD" }
 ]
 ```
 
@@ -332,7 +332,7 @@ E no `.env` da mesma máquina (nunca em `config.json`):
 CAM_SALA_PASSWORD=CHAVE_DE_ACESSO_DA_CAMERA
 ```
 
-A senha/chave de acesso geralmente está numa etiqueta sob a câmera. Ajuste `port`/`channel`/`subtype` só se o seu modelo não for Intelbras/Dahua padrão (ver seção "Cenários de Câmera Suportados").
+A senha/chave de acesso geralmente está numa etiqueta sob a câmera. Ajuste `port`/`channel`/`subtype`/`rtsp_path_template` só se o seu modelo não for Dahua/Intelbras padrão (ver seção "Cenários de Câmera Suportados" para o formato do template noutros fabricantes).
 
 #### 2.4 — Rodando como serviço (inicia com o Pi, reinicia sozinho se cair)
 
