@@ -1,5 +1,6 @@
 """Schemas Pydantic de configuração (config.json) e agenda de contatos (contacts.json)."""
-from typing import Dict, List, Optional, Tuple, Union
+import os
+from typing import ClassVar, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -20,17 +21,31 @@ def _validate_time_of_day(value: str) -> str:
 class CameraSourceConfig(BaseModel):
     """Uma fonte de câmera: webcam local (`index`), RTSP customizado (`rtsp_url`)
     ou RTSP Intelbras montado a partir de `ip`/credenciais. Wi-Fi local e remoto
-    via Tailscale usam exatamente este mesmo schema — só o `ip` muda."""
+    via Tailscale usam exatamente este mesmo schema — só o `ip` muda.
+
+    A senha RTSP é um segredo tão sensível quanto a apikey do WhatsApp, mas
+    precisa ser resolvida por câmera (a lista `cameras` pode ter várias). Por
+    isso `password_env` indica o NOME de uma variável de ambiente (definida
+    no `.env`, ver `.env.example`) de onde a senha real é lida em tempo de
+    uso — `config.json` guarda só o nome da variável, nunca o valor. O campo
+    `password` continua aceito por compatibilidade com instalações antigas,
+    mas fica em texto puro no arquivo; prefira `password_env` em config novas."""
 
     name: str
     index: Optional[int] = None
     ip: Optional[str] = None
     user: str = "admin"
     password: Optional[str] = None
+    password_env: Optional[str] = None
     port: int = 554
     channel: int = 1
     subtype: int = 1
     rtsp_url: Optional[str] = None
+
+    def resolve_password(self) -> Optional[str]:
+        if self.password_env:
+            return os.environ.get(self.password_env)
+        return self.password
 
     def resolve_src(self) -> Union[int, str]:
         if self.index is not None:
@@ -38,10 +53,19 @@ class CameraSourceConfig(BaseModel):
         if self.rtsp_url:
             return self.rtsp_url
         if self.ip:
-            if not self.password:
-                raise ValueError(f"Fonte '{self.name}': campo 'password' obrigatorio quando 'ip' e usado.")
+            password = self.resolve_password()
+            if not password:
+                if self.password_env:
+                    raise ValueError(
+                        f"Fonte '{self.name}': variavel de ambiente '{self.password_env}' "
+                        "(password_env) nao definida ou vazia."
+                    )
+                raise ValueError(
+                    f"Fonte '{self.name}': defina 'password_env' (recomendado) ou 'password' "
+                    "quando 'ip' e usado."
+                )
             return (
-                f"rtsp://{self.user}:{self.password}@{self.ip}:{self.port}"
+                f"rtsp://{self.user}:{password}@{self.ip}:{self.port}"
                 f"/cam/realmonitor?channel={self.channel}&subtype={self.subtype}"
             )
         raise ValueError(f"Fonte '{self.name}' invalida: informe 'index', 'rtsp_url' ou 'ip'.")
@@ -59,12 +83,27 @@ class WhatsAppConfig(BaseModel):
     """Configuração do gateway WhatsApp (Evolution API). A apikey NUNCA fica
     aqui (nem em config.json) — vem exclusivamente da variável de ambiente
     EVOLUTION_API_KEY (ver .env.example e src/notifications/whatsapp_client.py),
-    para não expor o segredo num arquivo que a GUI le/escreve em texto puro."""
+    para não expor o segredo num arquivo que a GUI le/escreve em texto puro.
+
+    `endpoint`/`instance` não são segredo (é a URL/nome pública da instância),
+    então continuam com um valor default aceitável em config.json — mas
+    `KINESIS_WHATSAPP_ENDPOINT`/`KINESIS_WHATSAPP_INSTANCE`, quando definidas,
+    têm prioridade (ver `resolve_endpoint`/`resolve_instance`), útil para
+    trocar de instância entre ambientes (dev/prod) sem editar config.json."""
+
+    ENDPOINT_ENV_VAR: ClassVar[str] = "KINESIS_WHATSAPP_ENDPOINT"
+    INSTANCE_ENV_VAR: ClassVar[str] = "KINESIS_WHATSAPP_INSTANCE"
 
     endpoint: Optional[str] = None  # Base URL da Evolution API, ex: https://message.senszia.com
     instance: Optional[str] = None  # Nome da instancia Evolution, ex: senszia
     max_retries: int = 4
     backoff_base_seconds: float = 2.0
+
+    def resolve_endpoint(self) -> Optional[str]:
+        return os.environ.get(self.ENDPOINT_ENV_VAR) or self.endpoint
+
+    def resolve_instance(self) -> Optional[str]:
+        return os.environ.get(self.INSTANCE_ENV_VAR) or self.instance
 
 
 class ObjectDetectionConfig(BaseModel):
@@ -135,13 +174,24 @@ class VoiceConfig(BaseModel):
     "envia uma mensagem" sem nome) são roteados pela MESMA matriz `events`
     usada pelos eventos de visão (chaves VOZ-CHAME-ME, VOZ-SOCORRO,
     VOZ-MENSAGEM, VOZ-CHAMAR-CONTATO — ver config.example.json), e não por
-    um campo de destinatários próprio."""
+    um campo de destinatários próprio.
+
+    `model_dir` é um caminho de filesystem, portanto varia por máquina (ex:
+    onde o modelo foi baixado manualmente numa instalação sem acesso ao
+    Hugging Face Hub) — `KINESIS_VOICE_MODEL_DIR`, quando definida, tem
+    prioridade sobre o campo (ver `resolve_model_dir`), para não precisar
+    editar config.json ao mover a instalação entre máquinas."""
+
+    MODEL_DIR_ENV_VAR: ClassVar[str] = "KINESIS_VOICE_MODEL_DIR"
 
     enabled: bool = False
     language: str = "pt"
     model_size: str = "small"
     model_dir: Optional[str] = None
     chunk_seconds: float = 4.0
+
+    def resolve_model_dir(self) -> Optional[str]:
+        return os.environ.get(self.MODEL_DIR_ENV_VAR) or self.model_dir
 
 
 class CheckinConfig(BaseModel):
@@ -180,12 +230,19 @@ class RemoteServerConfig(BaseModel):
     máquina instalada" do roteiro de evolução.
 
     NÃO é um servidor pensado para a internet pública: o único controle de
-    acesso é um token estático (`token`), adequado para uma rede já
-    autenticada por VPN (ex: Tailscale — o mesmo túnel já usado para a
-    câmera remota, ver README), não para exposição direta na internet.
-    `host` deve apontar para a interface da VPN (ou ficar em 127.0.0.1 se
-    o acesso remoto ainda não for necessário); nunca faça port-forward
-    desta porta no roteador."""
+    acesso é um token estático, adequado para uma rede já autenticada por
+    VPN (ex: Tailscale — o mesmo túnel já usado para a câmera remota, ver
+    README), não para exposição direta na internet. `host` deve apontar
+    para a interface da VPN (ou ficar em 127.0.0.1 se o acesso remoto ainda
+    não for necessário); nunca faça port-forward desta porta no roteador.
+
+    O token é um segredo (quem o possui acessa histórico e snapshots de
+    câmera remotamente), então o caminho recomendado é defini-lo só via
+    `KINESIS_REMOTE_SERVER_TOKEN` (ver .env.example) — `resolve_token()` lê
+    essa variável com prioridade sobre o campo `token`, que continua aceito
+    em config.json por compatibilidade com instalações antigas."""
+
+    TOKEN_ENV_VAR: ClassVar[str] = "KINESIS_REMOTE_SERVER_TOKEN"
 
     enabled: bool = False
     host: str = "127.0.0.1"
@@ -193,11 +250,15 @@ class RemoteServerConfig(BaseModel):
     token: Optional[str] = None
     snapshot_fps: float = 0.5
 
+    def resolve_token(self) -> Optional[str]:
+        return os.environ.get(self.TOKEN_ENV_VAR) or self.token
+
     @model_validator(mode="after")
     def _require_token_when_enabled(self):
-        if self.enabled and not self.token:
+        if self.enabled and not self.resolve_token():
             raise ValueError(
-                "remote_server.token e obrigatorio quando remote_server.enabled=true "
+                "remote_server.token (ou a variavel de ambiente KINESIS_REMOTE_SERVER_TOKEN) "
+                "e obrigatorio quando remote_server.enabled=true "
                 "(e o unico controle de acesso ao servidor - nunca habilite sem um token)."
             )
         return self

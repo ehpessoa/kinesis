@@ -441,7 +441,7 @@ def main():
         remote_server = RemoteStatusServer(
             host=app_config.remote_server.host,
             port=app_config.remote_server.port,
-            token=app_config.remote_server.token,
+            token=app_config.remote_server.resolve_token(),
             status_provider=lambda: build_status(pipelines, app_config, voice_controllers),
             history_provider=lambda limit: event_logger.read_recent(limit=limit),
             snapshot_fps=app_config.remote_server.snapshot_fps,
@@ -501,7 +501,7 @@ def create_voice_controllers(app_config: AppConfig, contacts: ContactsFile, disp
     for cam in app_config.cameras:
         transcriber = SpeechTranscriber(
             model_size=app_config.voice.model_size, language=app_config.voice.language,
-            model_dir=app_config.voice.model_dir,
+            model_dir=app_config.voice.resolve_model_dir(),
         )
         controller = VoiceController(
             source_name=cam.name, audio_source=cam.resolve_src(), contacts=contacts,

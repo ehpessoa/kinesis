@@ -2,7 +2,10 @@
 instância "senszia" — ver documentação da API fornecida pelo usuário).
 
 O endpoint (base URL) e a instância vêm de `config.json` (`WhatsAppConfig`) -
-não são segredo. A apikey NUNCA vem de config.json/GUI: é lida de
+não são segredo - mas podem ser sobrescritos por KINESIS_WHATSAPP_ENDPOINT /
+KINESIS_WHATSAPP_INSTANCE (ver `WhatsAppConfig.resolve_endpoint`/
+`resolve_instance`), útil para trocar de instância entre ambientes sem
+editar config.json. A apikey NUNCA vem de config.json/GUI: é lida de
 EVOLUTION_API_KEY (variável de ambiente, tipicamente num `.env` - ver
 .env.example), para não guardar o segredo num arquivo que a GUI escreve em
 texto puro. Implementa fila de retry com backoff exponencial para absorver
@@ -80,7 +83,9 @@ class WhatsAppNotifier:
         # frame_jpeg_base64 fica sem uso por enquanto: o endpoint sendText da
         # Evolution API nao aceita midia (isso exigiria /message/sendMedia/
         # {instance}, um endpoint separado - ver README, extensao futura).
-        if not self.config.endpoint or not self.config.instance:
+        endpoint = self.config.resolve_endpoint()
+        instance = self.config.resolve_instance()
+        if not endpoint or not instance:
             logger.warning(
                 "Evolution API nao configurada (endpoint/instancia); evento %s nao enviado.", event.event_id,
             )
@@ -92,7 +97,7 @@ class WhatsAppNotifier:
             )
             return False
 
-        url = self.config.endpoint.rstrip("/") + SEND_TEXT_PATH.format(instance=self.config.instance)
+        url = endpoint.rstrip("/") + SEND_TEXT_PATH.format(instance=instance)
         payload = self._build_payload(event, recipient_number)
         headers = {"Content-Type": "application/json", "apikey": api_key}
 

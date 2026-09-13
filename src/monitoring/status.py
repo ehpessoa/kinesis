@@ -17,7 +17,7 @@ def build_status(pipelines: list, app_config: AppConfig, voice_controllers: Opti
             for p in pipelines
         ],
         "whatsapp_configured": bool(
-            whatsapp.endpoint and whatsapp.instance and os.environ.get(EVOLUTION_API_KEY_ENV_VAR)
+            whatsapp.resolve_endpoint() and whatsapp.resolve_instance() and os.environ.get(EVOLUTION_API_KEY_ENV_VAR)
         ),
         "voice_available": bool(voice_controllers),
     }

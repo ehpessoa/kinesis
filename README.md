@@ -43,7 +43,7 @@ cp config/contacts.example.json config/contacts.json
 
 Edite `config/config.json` → `cameras`:
 * `index`: webcam local.
-* `ip` + `user`/`password` (+ `port`, `channel`, `subtype`): monta a URL RTSP padrão Intelbras/Dahua.
+* `ip` + `user`/`password_env` (+ `port`, `channel`, `subtype`): monta a URL RTSP padrão Intelbras/Dahua. `password_env` é o **nome** de uma variável de ambiente definida no `.env` (ex: `CAM_WIFI_LOCAL_PASSWORD=...`, ver `.env.example`) — a senha em si nunca vai em `config.json`. O campo `password` (valor em texto puro) ainda é aceito por compatibilidade, mas evite-o em configurações novas.
 * `rtsp_url`: URL RTSP completa customizada.
 
 Nenhum dos dois arquivos é versionado (estão no `.gitignore`) para não expor credenciais/token no repositório. Caminhos alternativos podem ser indicados via `KINESIS_CONFIG` / `KINESIS_CONTACTS`. Sem `config.json`, o sistema usa a webcam local (índice 0) por padrão.
@@ -89,7 +89,7 @@ Cada evento habilitado em `config.json → events` dispara uma notificação (`W
 }
 ```
 
-`endpoint` (base URL) e `instance` vêm de `config.json → whatsapp` (editáveis pela aba "Configuração" da GUI) — não são segredo. A **apikey nunca fica em config.json nem passa pela GUI**: vem exclusivamente da variável de ambiente `EVOLUTION_API_KEY`, lida de um arquivo `.env` na raiz do projeto (`python-dotenv`, carregado automaticamente por `whatsapp_client.py`) — copie `.env.example` para `.env` e preencha com a chave real da sua instância. `.env` está no `.gitignore`; nunca commite a chave.
+`endpoint` (base URL) e `instance` vêm de `config.json → whatsapp` (editáveis pela aba "Configuração" da GUI) — não são segredo, mas também podem ser definidos via `KINESIS_WHATSAPP_ENDPOINT`/`KINESIS_WHATSAPP_INSTANCE` no `.env` (têm prioridade sobre `config.json` quando presentes — útil para trocar de instância entre ambientes sem editar o arquivo). A **apikey nunca fica em config.json nem passa pela GUI**: vem exclusivamente da variável de ambiente `EVOLUTION_API_KEY`, lida de um arquivo `.env` na raiz do projeto (`python-dotenv`, carregado automaticamente por `whatsapp_client.py`) — copie `.env.example` para `.env` e preencha com a chave real da sua instância. `.env` está no `.gitignore`; nunca commite a chave.
 
 `number` é sempre normalizado (removendo `+`, espaços, parênteses e traços) antes do envio, então `contacts.json` pode ter o número em qualquer formatação comum, desde que contenha DDI+DDD+número.
 
@@ -239,7 +239,7 @@ Mitiga o gap "o único jeito de ver o sistema é abrir o desktop PyQt6 na máqui
 * `GET /api/history?limit=N` — os últimos N eventos de `data/events.db` (mesma fonte que alimenta o histórico da GUI local).
 * `GET /api/snapshot/<camera>` — o último frame JPEG capturado daquela câmera (atualizado a `remote_server.snapshot_fps`, padrão 0,5 Hz — throttle próprio por câmera, reaproveitando `RateLimiter`).
 
-**Modelo de acesso — leia antes de habilitar:** este servidor **não foi projetado para a internet pública**. O único controle de acesso é um token estático (`config.json -> remote_server.token`, obrigatório quando `enabled=true` — o schema recusa configurar um sem o outro). Isso é adequado para uma rede já autenticada por **VPN** — o mesmo túnel Tailscale já usado neste projeto para a câmera 5G remota (ver seção de hardware) — nunca para expor a porta diretamente na internet via port-forward do roteador. Configure `remote_server.host` para a interface atribuída pela VPN (ou deixe em `127.0.0.1` enquanto o acesso remoto ainda não é necessário) e distribua o token apenas aos familiares que devem ter acesso.
+**Modelo de acesso — leia antes de habilitar:** este servidor **não foi projetado para a internet pública**. O único controle de acesso é um token estático (`KINESIS_REMOTE_SERVER_TOKEN` no `.env` — recomendado — ou `config.json -> remote_server.token`, obrigatório de um jeito ou de outro quando `enabled=true`; o schema recusa configurar um sem o outro). Isso é adequado para uma rede já autenticada por **VPN** — o mesmo túnel Tailscale já usado neste projeto para a câmera 5G remota (ver seção de hardware) — nunca para expor a porta diretamente na internet via port-forward do roteador. Configure `remote_server.host` para a interface atribuída pela VPN (ou deixe em `127.0.0.1` enquanto o acesso remoto ainda não é necessário) e distribua o token apenas aos familiares que devem ter acesso.
 
 Desabilitado por padrão (`remote_server.enabled = false`).
 
@@ -322,8 +322,14 @@ Descubra o IP local da câmera (painel do roteador → dispositivos conectados, 
 
 ```json
 "cameras": [
-  { "name": "Sala - Intelbras", "ip": "192.168.1.108", "user": "admin", "password": "CHAVE_DE_ACESSO_DA_CAMERA" }
+  { "name": "Sala - Intelbras", "ip": "192.168.1.108", "user": "admin", "password_env": "CAM_SALA_PASSWORD" }
 ]
+```
+
+E no `.env` da mesma máquina (nunca em `config.json`):
+
+```bash
+CAM_SALA_PASSWORD=CHAVE_DE_ACESSO_DA_CAMERA
 ```
 
 A senha/chave de acesso geralmente está numa etiqueta sob a câmera. Ajuste `port`/`channel`/`subtype` só se o seu modelo não for Intelbras/Dahua padrão (ver seção "Cenários de Câmera Suportados").
@@ -368,7 +374,13 @@ journalctl -u kinesis.service -f        # acompanha o log em tempo real
 Como o Pi normalmente não tem monitor, habilite o servidor remoto (ver seção "Servidor Remoto") mesmo para acesso **só dentro de casa**:
 
 ```json
-"remote_server": { "enabled": true, "host": "0.0.0.0", "port": 8765, "token": "TROQUE_POR_UM_TOKEN_LONGO_E_UNICO" }
+"remote_server": { "enabled": true, "host": "0.0.0.0", "port": 8765 }
+```
+
+E no `.env` da mesma máquina:
+
+```bash
+KINESIS_REMOTE_SERVER_TOKEN=TROQUE_POR_UM_TOKEN_LONGO_E_UNICO
 ```
 
 Reinicie o serviço (`sudo systemctl restart kinesis.service`) e acesse `http://<ip-do-pi>:8765` de qualquer dispositivo **na mesma rede Wi-Fi** — que é exatamente o alcance de `host: 0.0.0.0` sem VPN: local, não pela internet. Para acesso de fora de casa, vá para o Cenário 3.
@@ -394,9 +406,13 @@ Não depende de o roteador/modem 4G suportar nada de especial — o Tailscale cr
    ```bash
    tailscale ip -4   # ex: 100.101.102.103
    ```
-2. **Atualize `config/config.json`** com esse IP e um token forte, e reinicie o serviço:
+2. **Atualize `config/config.json`** com esse IP, defina um token forte no `.env` e reinicie o serviço:
    ```json
-   "remote_server": { "enabled": true, "host": "0.0.0.0", "port": 8765, "token": "TROQUE_POR_UM_TOKEN_LONGO_E_UNICO" }
+   "remote_server": { "enabled": true, "host": "0.0.0.0", "port": 8765 }
+   ```
+   ```bash
+   # .env
+   KINESIS_REMOTE_SERVER_TOKEN=TROQUE_POR_UM_TOKEN_LONGO_E_UNICO
    ```
    ```bash
    sudo systemctl restart kinesis.service

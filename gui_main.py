@@ -71,7 +71,7 @@ def main():
         remote_server = RemoteStatusServer(
             host=app_config.remote_server.host,
             port=app_config.remote_server.port,
-            token=app_config.remote_server.token,
+            token=app_config.remote_server.resolve_token(),
             status_provider=lambda: build_status(pipelines, app_config, voice_controllers),
             history_provider=lambda limit: event_logger.read_recent(limit=limit),
             snapshot_fps=app_config.remote_server.snapshot_fps,

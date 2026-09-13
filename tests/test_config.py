@@ -13,6 +13,8 @@ from config.schemas import (
     PersonTrackingConfig,
     RemoteServerConfig,
     SeizureDetectionConfig,
+    VoiceConfig,
+    WhatsAppConfig,
 )
 
 
@@ -34,6 +36,26 @@ def test_camera_source_resolve_src_ip_builds_rtsp_url():
 def test_camera_source_resolve_src_ip_without_password_raises():
     cam = CameraSourceConfig(name="Sem senha", ip="192.168.1.108")
     with pytest.raises(ValueError, match="password"):
+        cam.resolve_src()
+
+
+def test_camera_source_resolve_src_uses_password_env(monkeypatch):
+    monkeypatch.setenv("CAM_TEST_PASSWORD", "SENHA_DO_AMBIENTE")
+    cam = CameraSourceConfig(name="Intelbras", ip="192.168.1.108", password_env="CAM_TEST_PASSWORD")
+    assert cam.resolve_src() == "rtsp://admin:SENHA_DO_AMBIENTE@192.168.1.108:554/cam/realmonitor?channel=1&subtype=1"
+
+
+def test_camera_source_resolve_src_password_env_takes_priority_over_password(monkeypatch):
+    monkeypatch.setenv("CAM_TEST_PASSWORD", "SENHA_DO_AMBIENTE")
+    cam = CameraSourceConfig(
+        name="Intelbras", ip="192.168.1.108", password="SENHA_NO_JSON", password_env="CAM_TEST_PASSWORD",
+    )
+    assert "SENHA_DO_AMBIENTE" in cam.resolve_src()
+
+
+def test_camera_source_resolve_src_password_env_missing_raises_with_var_name():
+    cam = CameraSourceConfig(name="Intelbras", ip="192.168.1.108", password_env="CAM_TEST_PASSWORD")
+    with pytest.raises(ValueError, match="CAM_TEST_PASSWORD"):
         cam.resolve_src()
 
 
@@ -66,13 +88,24 @@ def test_load_contacts_without_file_returns_empty(tmp_path, monkeypatch):
     assert contacts.contacts == []
 
 
-def test_config_example_json_validates_against_schema(repo_root):
+def test_config_example_json_validates_against_schema(repo_root, monkeypatch):
+    monkeypatch.setenv("CAM_WIFI_LOCAL_PASSWORD", "CHAVE_ACESSO_1")
+    monkeypatch.setenv("CAM_REMOTA_TAILSCALE_PASSWORD", "CHAVE_ACESSO_2")
     with open(f"{repo_root}/config/config.example.json", encoding="utf-8") as f:
         data = json.load(f)
     config = AppConfig.model_validate(data)
     assert len(config.cameras) == 3
+    assert config.cameras[1].password_env == "CAM_WIFI_LOCAL_PASSWORD"
     assert config.cameras[1].resolve_src().startswith("rtsp://admin:CHAVE_ACESSO_1@192.168.1.108")
     assert config.events["EVT-01"].enabled is True
+
+
+def test_config_example_json_camera_password_env_missing_raises(repo_root):
+    with open(f"{repo_root}/config/config.example.json", encoding="utf-8") as f:
+        data = json.load(f)
+    config = AppConfig.model_validate(data)
+    with pytest.raises(ValueError, match="CAM_WIFI_LOCAL_PASSWORD"):
+        config.cameras[1].resolve_src()
 
 
 def test_contacts_example_json_validates_against_schema(repo_root):
@@ -126,6 +159,23 @@ def test_remote_server_config_allows_disabled_without_token():
 def test_remote_server_config_accepts_token_when_enabled():
     config = RemoteServerConfig(enabled=True, token="segredo-longo")
     assert config.token == "segredo-longo"
+
+
+def test_remote_server_config_accepts_token_only_from_env_var(monkeypatch):
+    monkeypatch.setenv("KINESIS_REMOTE_SERVER_TOKEN", "segredo-do-ambiente")
+    config = RemoteServerConfig(enabled=True, token=None)
+    assert config.resolve_token() == "segredo-do-ambiente"
+
+
+def test_remote_server_config_env_var_takes_priority_over_field(monkeypatch):
+    monkeypatch.setenv("KINESIS_REMOTE_SERVER_TOKEN", "segredo-do-ambiente")
+    config = RemoteServerConfig(enabled=True, token="segredo-no-json")
+    assert config.resolve_token() == "segredo-do-ambiente"
+
+
+def test_remote_server_config_falls_back_to_field_without_env_var():
+    config = RemoteServerConfig(enabled=True, token="segredo-no-json")
+    assert config.resolve_token() == "segredo-no-json"
 
 
 def test_storage_config_defaults():
@@ -193,3 +243,28 @@ def test_save_and_load_contacts_roundtrip(tmp_path, monkeypatch):
 
     reloaded = load_contacts()
     assert reloaded.find("abc").name == "Fulano"
+
+
+def test_whatsapp_config_resolve_falls_back_to_fields_without_env_vars():
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance="senszia")
+    assert config.resolve_endpoint() == "https://message.senszia.com"
+    assert config.resolve_instance() == "senszia"
+
+
+def test_whatsapp_config_resolve_prefers_env_vars(monkeypatch):
+    monkeypatch.setenv("KINESIS_WHATSAPP_ENDPOINT", "https://outro-endpoint.example.com")
+    monkeypatch.setenv("KINESIS_WHATSAPP_INSTANCE", "outra-instancia")
+    config = WhatsAppConfig(endpoint="https://message.senszia.com", instance="senszia")
+    assert config.resolve_endpoint() == "https://outro-endpoint.example.com"
+    assert config.resolve_instance() == "outra-instancia"
+
+
+def test_voice_config_resolve_model_dir_falls_back_to_field():
+    config = VoiceConfig(model_dir="/caminho/no/json")
+    assert config.resolve_model_dir() == "/caminho/no/json"
+
+
+def test_voice_config_resolve_model_dir_prefers_env_var(monkeypatch):
+    monkeypatch.setenv("KINESIS_VOICE_MODEL_DIR", "/caminho/do/ambiente")
+    config = VoiceConfig(model_dir="/caminho/no/json")
+    assert config.resolve_model_dir() == "/caminho/do/ambiente"

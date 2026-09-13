@@ -1,8 +1,8 @@
 {
   "cameras": [
     { "name": "Webcam Local (Cenario 1)", "index": 0 },
-    { "name": "Intelbras Wi-Fi Local (Cenario 2)", "ip": "192.168.1.108", "user": "admin", "password": "CHAVE_ACESSO_1" },
-    { "name": "Intelbras 5G Remota via Tailscale (Cenario 3)", "ip": "192.168.8.150", "user": "admin", "password": "CHAVE_ACESSO_2" }
+    { "name": "Intelbras Wi-Fi Local (Cenario 2)", "ip": "192.168.1.108", "user": "admin", "password_env": "CAM_WIFI_LOCAL_PASSWORD" },
+    { "name": "Intelbras 5G Remota via Tailscale (Cenario 3)", "ip": "192.168.8.150", "user": "admin", "password_env": "CAM_REMOTA_TAILSCALE_PASSWORD" }
   ],
   "events": {
     "EVT-01": { "enabled": true, "notify_contact_ids": ["filho_carlos"] },
@@ -57,7 +57,7 @@
     "enabled": false,
     "host": "127.0.0.1",
     "port": 8765,
-    "token": "TROQUE_POR_UM_TOKEN_LONGO_E_UNICO",
+    "token": null,
     "snapshot_fps": 0.5
   },
   "storage": {

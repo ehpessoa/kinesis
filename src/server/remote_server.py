@@ -8,11 +8,12 @@ Usa só a biblioteca padrão (`http.server`) — sem trazer uma dependência
 nova (Flask/FastAPI) para um recurso opcional e somente-leitura.
 
 ⚠️ NÃO é pensado para a internet pública. O único controle de acesso é um
-token estático (`config.json -> remote_server.token`), adequado para uma
-rede já autenticada por VPN (ex: Tailscale — o mesmo túnel já usado para a
-câmera remota, ver README), não para exposição direta na internet. Aponte
-`remote_server.host` para a interface da VPN e nunca faça port-forward
-desta porta no roteador.
+token estático (`KINESIS_REMOTE_SERVER_TOKEN` no ambiente, ou
+`config.json -> remote_server.token` — ver `RemoteServerConfig.resolve_token`
+em config/schemas.py), adequado para uma rede já autenticada por VPN (ex:
+Tailscale — o mesmo túnel já usado para a câmera remota, ver README), não
+para exposição direta na internet. Aponte `remote_server.host` para a
+interface da VPN e nunca faça port-forward desta porta no roteador.
 """
 import json
 import threading
