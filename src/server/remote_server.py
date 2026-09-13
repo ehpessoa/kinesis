@@ -190,7 +190,21 @@ async function refreshHistory() {
 }
 
 let pollHandle = null;
+function applyTokenFromUrlIfPresent() {
+  // Permite abrir um link "http://host:porta/?token=..." (ex: recebido por
+  // WhatsApp quando o servidor sobe, ver src/monitoring/remote_server_notice.py)
+  // sem precisar digitar o token manualmente. Salva em localStorage e limpa
+  // a URL visivel para o token nao ficar exposto na barra de enderecos.
+  const params = new URLSearchParams(location.search);
+  const urlToken = params.get("token");
+  if (!urlToken) return;
+  localStorage.setItem("kinesis_token", urlToken);
+  params.delete("token");
+  const rest = params.toString();
+  history.replaceState(null, "", location.pathname + (rest ? "?" + rest : ""));
+}
 function boot() {
+  applyTokenFromUrlIfPresent();
   const token = getToken();
   document.getElementById("gate").hidden = !!token;
   document.getElementById("dashboard").hidden = !token;

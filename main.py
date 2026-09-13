@@ -30,6 +30,7 @@ from src.behavior.event_engine import EventEngine, EventNotification
 from src.behavior.tracker import BehaviorTracker
 from src.capture.threaded_camera import ThreadedCamera
 from src.monitoring.checkin import CheckinScheduler
+from src.monitoring.remote_server_notice import notify_remote_server_started
 from src.monitoring.status import build_status
 from src.notifications.whatsapp_client import WhatsAppNotifier, encode_frame_jpeg_base64, encode_frame_jpeg_bytes
 from src.server.remote_server import RemoteStatusServer
@@ -447,6 +448,7 @@ def main():
             snapshot_fps=app_config.remote_server.snapshot_fps,
         )
         remote_server.start()
+        notify_remote_server_started(app_config, contacts, dispatcher, event_logger=event_logger)
 
     print(f"SMA-TR iniciado com {len(pipelines)} camera(s). Pressione 'q' em qualquer janela para sair.")
 

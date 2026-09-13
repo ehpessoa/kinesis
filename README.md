@@ -241,7 +241,9 @@ Mitiga o gap "o único jeito de ver o sistema é abrir o desktop PyQt6 na máqui
 
 **Modelo de acesso — leia antes de habilitar:** este servidor **não foi projetado para a internet pública**. O único controle de acesso é um token estático (`KINESIS_REMOTE_SERVER_TOKEN` no `.env` — recomendado — ou `config.json -> remote_server.token`, obrigatório de um jeito ou de outro quando `enabled=true`; o schema recusa configurar um sem o outro). Isso é adequado para uma rede já autenticada por **VPN** — o mesmo túnel Tailscale já usado neste projeto para a câmera 5G remota (ver seção de hardware) — nunca para expor a porta diretamente na internet via port-forward do roteador. Configure `remote_server.host` para a interface atribuída pela VPN (ou deixe em `127.0.0.1` enquanto o acesso remoto ainda não é necessário) e distribua o token apenas aos familiares que devem ter acesso.
 
-Desabilitado por padrão (`remote_server.enabled = false`).
+**Aviso automático por WhatsApp ao subir** (`remote_server.notify_contact_ids`): sem isso, a única forma de um familiar descobrir o endereço é alguém na máquina rodar algo como "what's my ip address" e ditar o resultado por telefone. Com pelo menos um contato configurado em `notify_contact_ids`, toda vez que `main.py`/`gui_main.py` inicia com `remote_server.enabled=true`, os contatos listados recebem uma mensagem única com data/hora e a URL pronta para abrir (já com o token na query string, então basta tocar no link — ver `src/monitoring/remote_server_notice.py`). Se `host` estiver em `0.0.0.0` (escutando em todas as interfaces, o valor recomendado quando `remote_server` aceita tanto Wi-Fi local quanto VPN), o próprio Kinesis detecta o IP da interface de saída da máquina para montar a URL; se `host` for `127.0.0.1` (acesso remoto deliberadamente desligado), nenhum aviso é enviado. Igual ao restante do projeto, o segredo (aqui, o token embutido no link) já é o mesmo enviado por WhatsApp de qualquer forma — não é uma exposição adicional.
+
+Desabilitado por padrão (`remote_server.enabled = false`, `notify_contact_ids = []`).
 
 ---
 
@@ -385,6 +387,11 @@ KINESIS_REMOTE_SERVER_TOKEN=TROQUE_POR_UM_TOKEN_LONGO_E_UNICO
 
 Reinicie o serviço (`sudo systemctl restart kinesis.service`) e acesse `http://<ip-do-pi>:8765` de qualquer dispositivo **na mesma rede Wi-Fi** — que é exatamente o alcance de `host: 0.0.0.0` sem VPN: local, não pela internet. Para acesso de fora de casa, vá para o Cenário 3.
 
+Para não precisar descobrir esse IP manualmente toda vez, adicione `notify_contact_ids` (ver seção "Servidor Remoto" acima) — o Kinesis detecta o IP sozinho e manda o link pronto por WhatsApp assim que o serviço sobe:
+```json
+"remote_server": { "enabled": true, "host": "0.0.0.0", "port": 8765, "notify_contact_ids": ["filho_carlos"] }
+```
+
 ---
 
 ### Cenário 3 — Cenário 2 + acesso remoto pela internet via VPN
@@ -418,6 +425,8 @@ Não depende de o roteador/modem 4G suportar nada de especial — o Tailscale cr
    sudo systemctl restart kinesis.service
    ```
    > **Endurecimento opcional:** trocar `host` de `0.0.0.0` para o IP do Tailscale (`100.101.102.103`) faz o servidor só aceitar conexões vindas da VPN, nem da Wi-Fi local. Se fizer isso, adicione `After=tailscaled.service` ao `[Unit]` do systemd — senão o Kinesis pode tentar subir antes do Tailscale atribuir o IP e falhar ao abrir a porta.
+   >
+   > **Relevante para o aviso automático por WhatsApp** (`notify_contact_ids`, ver seção "Servidor Remoto"): com `host: 0.0.0.0` (várias interfaces — Wi-Fi local e Tailscale), o Kinesis não tem como adivinhar qual delas o familiar remoto consegue alcançar, então a detecção automática de IP tende a anunciar a Wi-Fi local, não a VPN. Para o link enviado por WhatsApp já vir com o IP correto do Tailscale, defina `host` explicitamente como no endurecimento acima.
 3. **No celular/notebook do familiar remoto**, instale o app Tailscale ([tailscale.com/download](https://tailscale.com/download)) e faça login:
    * Mais simples: mesma conta usada no Pi (ok para uso familiar).
    * Mais correto: no [painel admin do Tailscale](https://login.tailscale.com/admin/machines), convide o familiar como um usuário separado da sua rede (*tailnet*) — cada um com seu próprio login, sem compartilhar senha.

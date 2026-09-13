@@ -15,6 +15,7 @@ from main import CameraPipeline, NotificationDispatcher, create_voice_controller
 from src.gui.bridge import GuiBridge
 from src.gui.main_window import MainWindow
 from src.monitoring.checkin import CheckinScheduler
+from src.monitoring.remote_server_notice import notify_remote_server_started
 from src.monitoring.status import build_status
 from src.notifications.whatsapp_client import WhatsAppNotifier
 from src.server.remote_server import RemoteStatusServer
@@ -77,6 +78,7 @@ def main():
             snapshot_fps=app_config.remote_server.snapshot_fps,
         )
         remote_server.start()
+        notify_remote_server_started(app_config, contacts, dispatcher, event_logger=event_logger)
 
     qt_app = QApplication(sys.argv)
     bridge = GuiBridge(pipelines, app_config, contacts, notifier, dispatcher,

@@ -264,7 +264,14 @@ class RemoteServerConfig(BaseModel):
     câmera remotamente), então o caminho recomendado é defini-lo só via
     `KINESIS_REMOTE_SERVER_TOKEN` (ver .env.example) — `resolve_token()` lê
     essa variável com prioridade sobre o campo `token`, que continua aceito
-    em config.json por compatibilidade com instalações antigas."""
+    em config.json por compatibilidade com instalações antigas.
+
+    `notify_contact_ids`: ao subir o servidor (`main.py`/`gui_main.py`), os
+    contatos aqui listados recebem uma mensagem única por WhatsApp com data/
+    hora e a URL para acessar o dashboard remotamente (ver
+    `src/monitoring/remote_server_notice.py`) — mitiga o gap de o único jeito
+    de descobrir o endereço da máquina ser abrir o terminal e rodar algo como
+    "what's my ip address". Vazio (default) desativa o aviso."""
 
     TOKEN_ENV_VAR: ClassVar[str] = "KINESIS_REMOTE_SERVER_TOKEN"
 
@@ -273,6 +280,7 @@ class RemoteServerConfig(BaseModel):
     port: int = 8765
     token: Optional[str] = None
     snapshot_fps: float = 0.5
+    notify_contact_ids: List[str] = Field(default_factory=list)
 
     def resolve_token(self) -> Optional[str]:
         return os.environ.get(self.TOKEN_ENV_VAR) or self.token
